@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 
 
 def format_seconds(secs: int) -> str:
@@ -16,6 +17,37 @@ def format_seconds(secs: int) -> str:
     if not parts:
         parts.append("<1m")
     return " ".join(parts)
+
+
+def format_duration_hms(total_seconds: int) -> str:
+    total_seconds = max(0, int(total_seconds))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours}hr {minutes}m {seconds}s"
+
+
+def parse_duration_hms(text: str) -> int | None:
+    normalized = (text or "").strip().casefold()
+    if not normalized:
+        return None
+    matches = re.findall(r"(\d+)\s*(hr|hrs|hour|hours|h|m|min|mins|minute|minutes|s|sec|secs|second|seconds)", normalized)
+    if not matches:
+        return None
+    matched_text = " ".join(f"{value}{unit}" for value, unit in matches)
+    compact_normalized = re.sub(r"\s+", "", normalized)
+    compact_matched = re.sub(r"\s+", "", matched_text)
+    if compact_matched != compact_normalized:
+        return None
+    total_seconds = 0
+    for value_text, unit in matches:
+        value = int(value_text)
+        if unit.startswith("h"):
+            total_seconds += value * 3600
+        elif unit.startswith("m"):
+            total_seconds += value * 60
+        else:
+            total_seconds += value
+    return total_seconds
 
 
 def format_relative_time(date_str: str, *, today: dt.date | None = None) -> str:

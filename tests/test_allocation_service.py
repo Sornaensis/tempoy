@@ -56,6 +56,22 @@ class AllocationServiceTests(unittest.TestCase):
         self.assertEqual([row.allocation_units for row in updated.rows], [2000, 4000, 4000])
         self.assertTrue(self.service.validate(updated))
 
+    def test_remove_row_redistributes_deleted_units_without_equalizing(self) -> None:
+        state = AllocationState(
+            total_units=10_000,
+            rows=[
+                AllocationRow(issue_key="A", allocation_units=2000, locked=False),
+                AllocationRow(issue_key="B", allocation_units=3000, locked=False),
+                AllocationRow(issue_key="C", allocation_units=5000, locked=False),
+            ],
+        )
+
+        updated = self.service.remove_row(state, "A")
+
+        self.assertEqual([row.issue_key for row in updated.rows], ["B", "C"])
+        self.assertEqual([row.allocation_units for row in updated.rows], [3750, 6250])
+        self.assertTrue(self.service.validate(updated))
+
     def test_allocations_to_seconds_assigns_exact_total(self) -> None:
         state = AllocationState(
             total_units=10_000,
@@ -88,6 +104,20 @@ class AllocationServiceTests(unittest.TestCase):
         allocations = self.service.allocations_to_seconds(state, daily_time_minutes=480)
 
         self.assertEqual(allocations, {})
+
+    def test_allocations_to_total_seconds_uses_remaining_time_budget(self) -> None:
+        state = AllocationState(
+            total_units=10_000,
+            rows=[
+                AllocationRow(issue_key="A", allocation_units=2500),
+                AllocationRow(issue_key="B", allocation_units=7500),
+            ],
+        )
+
+        allocations = self.service.allocations_to_total_seconds(state, total_seconds=7200)
+
+        self.assertEqual(allocations, {"A": 1800, "B": 5400})
+        self.assertEqual(sum(allocations.values()), 7200)
 
 
 if __name__ == "__main__":

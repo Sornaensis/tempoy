@@ -119,6 +119,23 @@ class ServicesTests(unittest.TestCase):
         self.assertTrue(snapshots[0].is_recently_worked)
         self.assertEqual((snapshots[0].today_seconds, snapshots[0].total_seconds), (600, 3600))
 
+    def test_issue_catalog_filters_snapshots_by_key_and_summary_without_reordering(self) -> None:
+        catalog = IssueCatalog()
+        snapshots = catalog.build_snapshots(
+            [
+                {"key": "ABC-2", "fields": {"summary": "Billing endpoint", "status": {"name": "Done"}, "updated": "2026-03-08T10:00:00+00:00"}},
+                {"key": "ABC-1", "fields": {"summary": "Login page polish", "status": {"name": "Done"}, "updated": "2026-03-07T10:00:00+00:00"}},
+                {"key": "XYZ-3", "fields": {"summary": "Search dialog", "status": {"name": "In Progress"}, "updated": "2026-03-09T10:00:00+00:00"}},
+            ],
+            last_logged_by_key={"ABC-2": "2026-03-09", "ABC-1": "2026-03-01"},
+        )
+
+        filtered_by_key = catalog.filter_snapshots(snapshots, "ABC")
+        filtered_by_summary = catalog.filter_snapshots(snapshots, "search")
+
+        self.assertEqual([snapshot.issue_key for snapshot in filtered_by_key], ["ABC-2", "ABC-1"])
+        self.assertEqual([snapshot.issue_key for snapshot in filtered_by_summary], ["XYZ-3"])
+
     def test_worklog_service_returns_unique_recent_worked_issue_keys(self) -> None:
         jira = _FakeJiraClient()
         tempo = _FakeTempoClient(

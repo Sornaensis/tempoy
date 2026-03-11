@@ -40,7 +40,18 @@ class IssueCatalog:
         return keys
 
     @staticmethod
-    def _extract_parent_info(fields: Dict) -> tuple[str, str]:
+    def filter_snapshots(snapshots: Iterable[IssueSnapshot], query: str) -> List[IssueSnapshot]:
+        normalized_query = (query or "").strip().casefold()
+        if not normalized_query:
+            return list(snapshots)
+        return [
+            snapshot
+            for snapshot in snapshots
+            if normalized_query in snapshot.issue_key.casefold() or normalized_query in snapshot.summary.casefold()
+        ]
+
+    @staticmethod
+    def extract_parent_info(fields: Dict) -> tuple[str, str]:
         parent_text = ""
         lookup_key = ""
         epic = fields.get("customfield_10014")
@@ -69,6 +80,15 @@ class IssueCatalog:
                     parent_text = parent_key
                     lookup_key = parent_key
         return parent_text, lookup_key
+
+    @staticmethod
+    def split_parent_text(parent_text: str, lookup_key: str) -> tuple[str, str]:
+        if not parent_text:
+            return lookup_key or "", ""
+        if ":" in parent_text:
+            parent_key, parent_summary = parent_text.split(":", 1)
+            return (lookup_key or parent_key.strip(), parent_summary.strip())
+        return (lookup_key or parent_text.strip(), "")
 
     @staticmethod
     def _timestamp_or_zero(value: Optional[str]) -> float:
@@ -104,7 +124,7 @@ class IssueCatalog:
             if not issue_key:
                 continue
             fields = issue.get("fields", {})
-            parent_or_epic, parent_lookup_key = self._extract_parent_info(fields)
+            parent_or_epic, parent_lookup_key = self.extract_parent_info(fields)
             today_seconds, total_seconds = totals.get(issue_key, (0, 0))
             snapshots.append(
                 IssueSnapshot(

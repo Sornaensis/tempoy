@@ -111,6 +111,17 @@ class IssueList(QtWidgets.QTreeWidget):
                     child.setText(5, last_logged)
                     return
 
+    def update_parent_summary(self, parent_key: str, parent_summary: str):
+        if not parent_key:
+            return
+        display_text = f"{parent_key}: {parent_summary}" if parent_summary else parent_key
+        for parent_index in range(self.topLevelItemCount()):
+            parent = self.topLevelItem(parent_index)
+            for child_index in range(parent.childCount()):
+                child = parent.child(child_index)
+                if child.data(2, QtCore.Qt.UserRole) == parent_key:
+                    child.setText(2, display_text)
+
     def _on_item_activated(self, item, col):
         if item and item.parent():
             self.issueSelected.emit(item.text(0), item.text(1))

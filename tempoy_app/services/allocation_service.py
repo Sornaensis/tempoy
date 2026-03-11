@@ -61,8 +61,43 @@ class AllocationService:
             rows[index].allocation_units = units
         return AllocationState(total_units=state.total_units, rows=rows)
 
-    def allocations_to_seconds(self, state: AllocationState, daily_time_minutes: int) -> Dict[str, int]:
-        total_seconds = max(0, int(daily_time_minutes) * 60)
+    def remove_row(self, state: AllocationState, issue_key: str) -> AllocationState:
+        rows = [replace(row) for row in state.rows]
+        target_index = next((index for index, row in enumerate(rows) if row.issue_key == issue_key), None)
+        if target_index is None:
+            return AllocationState(total_units=state.total_units, rows=rows)
+        target_row = rows[target_index]
+        remaining_rows = [row for index, row in enumerate(rows) if index != target_index]
+        if not remaining_rows:
+            return AllocationState(total_units=state.total_units, rows=[])
+        removed_units = max(0, int(target_row.allocation_units))
+        unlocked_indexes = [index for index, row in enumerate(remaining_rows) if not row.locked]
+        if removed_units > 0 and unlocked_indexes:
+            previous_total = sum(max(0, remaining_rows[index].allocation_units) for index in unlocked_indexes)
+            if previous_total <= 0:
+                base, remainder = divmod(removed_units, len(unlocked_indexes))
+                for offset, index in enumerate(unlocked_indexes):
+                    remaining_rows[index].allocation_units += base + (1 if offset < remainder else 0)
+            else:
+                provisional: List[tuple[int, int, int]] = []
+                assigned_total = 0
+                for index in unlocked_indexes:
+                    numerator = max(0, remaining_rows[index].allocation_units) * removed_units
+                    units = numerator // previous_total
+                    remainder_value = numerator % previous_total
+                    provisional.append((index, units, remainder_value))
+                    assigned_total += units
+                leftover = removed_units - assigned_total
+                provisional.sort(key=lambda item: (-item[2], item[0]))
+                for offset in range(leftover):
+                    index, units, remainder_value = provisional[offset]
+                    provisional[offset] = (index, units + 1, remainder_value)
+                for index, units, _ in provisional:
+                    remaining_rows[index].allocation_units += units
+        return AllocationState(total_units=state.total_units, rows=remaining_rows)
+
+    def allocations_to_total_seconds(self, state: AllocationState, total_seconds: int) -> Dict[str, int]:
+        total_seconds = max(0, int(total_seconds))
         allocations: Dict[str, int] = {}
         provisional: List[tuple[str, int, int]] = []
         assigned_total = 0
@@ -82,6 +117,9 @@ class AllocationService:
         for issue_key, seconds, _ in provisional:
             allocations[issue_key] = seconds
         return allocations
+
+    def allocations_to_seconds(self, state: AllocationState, daily_time_minutes: int) -> Dict[str, int]:
+        return self.allocations_to_total_seconds(state, max(0, int(daily_time_minutes) * 60))
 
     def validate(self, state: AllocationState) -> bool:
         return state.allocated_units() == state.total_units and all(row.allocation_units >= 0 for row in state.rows)

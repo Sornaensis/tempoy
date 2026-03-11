@@ -14,6 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TEMPOY_DIR="$HOME/.tempoy"
 VENV_DIR="$TEMPOY_DIR/venv"
 CONFIG_FILE="$TEMPOY_DIR/config.json"
+PACKAGE_DIR="$TEMPOY_DIR/tempoy_app"
 
 # Detect OS
 if [[ "$OSTYPE" == "darwin"* ]]; then
@@ -120,7 +121,9 @@ if [[ "$1" == "uninstall_tempoy" ]]; then
         # Remove everything except config files
         rm -rf "$VENV_DIR" 2>/dev/null || true
         rm -f "$TEMPOY_DIR/tempoy.py" 2>/dev/null || true
+        rm -f "$TEMPOY_DIR/tempoy.pyw" 2>/dev/null || true
         rm -f "$TEMPOY_DIR/tempoy" 2>/dev/null || true
+        rm -rf "$PACKAGE_DIR" 2>/dev/null || true
         
         # Restore config
         if [[ -f "$CONFIG_FILE.backup" ]]; then
@@ -214,7 +217,7 @@ pip install --upgrade pip > /dev/null 2>&1
 pip install "PySide6>=6.7" "requests>=2.32"
 log_success "Dependencies installed (PySide6, requests)"
 
-# Step 5: Copy tempoy.py
+# Step 5: Copy Tempoy application payload
 echo
 log_step "[5/8] Installing Tempoy application..."
 if [[ ! -f "$SCRIPT_DIR/tempoy.py" ]]; then
@@ -222,8 +225,21 @@ if [[ ! -f "$SCRIPT_DIR/tempoy.py" ]]; then
     exit 1
 fi
 
+if [[ ! -f "$SCRIPT_DIR/tempoy.pyw" ]]; then
+    log_error "tempoy.pyw not found in $SCRIPT_DIR"
+    exit 1
+fi
+
+if [[ ! -f "$SCRIPT_DIR/tempoy_app/__main__.py" ]]; then
+    log_error "tempoy_app package not found in $SCRIPT_DIR"
+    exit 1
+fi
+
 cp "$SCRIPT_DIR/tempoy.py" "$TEMPOY_DIR/tempoy.py"
-log_success "Tempoy application installed"
+cp "$SCRIPT_DIR/tempoy.pyw" "$TEMPOY_DIR/tempoy.pyw"
+rm -rf "$PACKAGE_DIR"
+cp -R "$SCRIPT_DIR/tempoy_app" "$PACKAGE_DIR"
+log_success "Tempoy application payload installed"
 
 # Step 6: Create launcher script
 echo
@@ -239,7 +255,7 @@ source "$SCRIPT_DIR/venv/bin/activate"
 cd "$SCRIPT_DIR"
 
 # Run tempoy with all arguments passed through
-python tempoy.py "$@"
+python -m tempoy_app "$@"
 EOF
 
 chmod +x "$TEMPOY_DIR/tempoy"
@@ -319,7 +335,7 @@ EOF
 export PATH="$TEMPOY_DIR:\$PATH"
 cd "$TEMPOY_DIR"
 source venv/bin/activate
-python tempoy.py
+python -m tempoy_app
 EOF
     chmod +x "$MACOS_DIR/tempoy"
     
@@ -359,7 +375,7 @@ cd "$TEMPOY_DIR"
 source venv/bin/activate
 
 # Test by checking if modules load correctly
-if python -c "import sys; sys.path.insert(0, '.'); import tempoy" 2>/dev/null; then
+if python -c "import sys; sys.path.insert(0, '.'); import tempoy; import tempoy_app" 2>/dev/null; then
     log_success "Installation verified"
 else
     log_warning "Could not fully verify installation, but files are in place."

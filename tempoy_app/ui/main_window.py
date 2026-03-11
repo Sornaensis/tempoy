@@ -30,12 +30,16 @@ from tempoy_app.api.jira import JiraClient
 from tempoy_app.api.tempo import TempoClient
 from tempoy_app.config import AppConfig, ConfigManager
 from tempoy_app.formatting import format_relative_time, format_seconds
-from tempoy_app.models import IssueSnapshot
+from tempoy_app.logging_utils import debug_enabled, debug_log
+from tempoy_app.models import AllocationState, IssueSnapshot
 from tempoy_app.services.allocation_service import AllocationService
 from tempoy_app.services.cache_service import CacheService
 from tempoy_app.services.issue_catalog import IssueCatalog
+from tempoy_app.services.reminder_service import ReminderService
 from tempoy_app.services.worklog_service import WorklogService
+from tempoy_app.ui import messages
 from tempoy_app.ui.allocation_panel import AllocationPanel
+from tempoy_app.ui.issue_browser_state import IssueBrowserState
 from tempoy_app.ui.issue_list import IssueList
 from tempoy_app.ui.settings_dialog import SettingsDialog
 
@@ -53,6 +57,11 @@ class Floater(QtWidgets.QMainWindow):
     worklogFetched = QtCore.Signal(str, str, str)  # issue_key, today, total
     issueListRerenderRequested = QtCore.Signal()
     issueResultsFetched = QtCore.Signal(object, object, object)
+    dailyTotalUpdated = QtCore.Signal()
+    selectedIssueParentFetched = QtCore.Signal(str, str, int)
+    allocationIssueDetailsFetched = QtCore.Signal(object, int)
+    allocationParentSummariesFetched = QtCore.Signal(object, int)
+    gridParentSummariesFetched = QtCore.Signal(object, int)
     def __init__(self, cfg: AppConfig):
         super().__init__()
         self.cfg = cfg
@@ -61,6 +70,8 @@ class Floater(QtWidgets.QMainWindow):
         self.worklog_service: Optional[WorklogService] = None
         self.allocation_service = AllocationService()
         self.issue_catalog = IssueCatalog()
+        self.reminder_service = ReminderService()
+        self.issue_browser = IssueBrowserState(self.issue_catalog)
         self.account_id: Optional[str] = None
         self._current_issue_snapshots: List[IssueSnapshot] = []
         self._raw_issues_by_key: Dict[str, Dict] = {}
@@ -82,6 +93,7 @@ class Floater(QtWidgets.QMainWindow):
         
         # Flag to prevent resize tracking during programmatic resizing
         self._programmatic_resize = False
+        self._applying_splitter_sizes = False
         
         # Track the current expanded state explicitly
         self._is_expanded = cfg.expanded
@@ -90,10 +102,16 @@ class Floater(QtWidgets.QMainWindow):
         self._daily_total_secs = 0
         self._daily_total_cache_time = 0
         self._daily_total_cache_duration = 300  # 5 minutes
+        self._daily_total_initialized = False
+        self._grid_parent_summary_loading = False
         
         # Startup state tracking
         self._startup_complete = False
         self._daily_total_lock = threading.Lock()
+        self._selected_issue_request_token = 0
+        self._restore_issue_request_token = 0
+        self._allocation_context_request_token = 0
+        self._grid_parent_summary_request_token = 0
         
         # Timer tracking state
         self._timer_running = True  # Start in running state
@@ -102,6 +120,7 @@ class Floater(QtWidgets.QMainWindow):
         # --- New: Paused/lock tracking state ---
         # _timer_paused differs from stopped: paused preserves remaining countdown and running flag.
         self._timer_paused = False
+
         self._paused_due_to_lock = False  # Whether current pause originated from workstation lock
         self._pause_time = None  # Timestamp when pause started
         self._remaining_to_next_reminder = None  # Seconds remaining to reminder when paused
@@ -122,7 +141,8 @@ class Floater(QtWidgets.QMainWindow):
         self.search = QtWidgets.QComboBox()
         self.search.setEditable(True)
         self.search.setInsertPolicy(QtWidgets.QComboBox.NoInsert)
-        self.search.lineEdit().setPlaceholderText("Search issue (key or text)… Enter = search")
+        self.search.lineEdit().setPlaceholderText(messages.SEARCH_PLACEHOLDER)
+        self.search.setToolTip(messages.SEARCH_TOOLTIP)
         self.search.lineEdit().returnPressed.connect(self.on_search)
         self.search.activated.connect(self.on_search_from_dropdown)
         # Initialize search history dropdown
@@ -135,6 +155,7 @@ class Floater(QtWidgets.QMainWindow):
         self.btn_expand = QtWidgets.QToolButton(text="▼")
         self.btn_expand.setCheckable(True)
         self.btn_expand.setChecked(cfg.expanded)  # Restore saved state
+        self.btn_expand.setToolTip(messages.SHOW_HIDE_BROWSER_TOOLTIP)
         self.btn_expand.toggled.connect(self.on_toggle_expand)
         self.btn_settings = QtWidgets.QToolButton(text="⚙")
         self.btn_settings.clicked.connect(self.open_settings)
@@ -144,7 +165,7 @@ class Floater(QtWidgets.QMainWindow):
         inc_grid.setHorizontalSpacing(6)
         inc_grid.setVerticalSpacing(4)
         half = (len(INCREMENTS_MIN) + 1) // 2  # top row length
-        buttons = []
+        self._increment_buttons: dict[int, QtWidgets.QPushButton] = {}
         for idx, m in enumerate(INCREMENTS_MIN):
             row = 0 if idx < half else 1
             col = idx if row == 0 else idx - half
@@ -152,10 +173,10 @@ class Floater(QtWidgets.QMainWindow):
             b.setFixedHeight(26)
             b.clicked.connect(lambda _, mm=m: self.log_increment(minutes=mm))
             inc_grid.addWidget(b, row, col)
-            buttons.append(b)
+            self._increment_buttons[m] = b
 
         # Timer control button spans both rows at the end
-        self.timer_btn = QtWidgets.QPushButton("Starting...")
+        self.timer_btn = QtWidgets.QPushButton(messages.TIMER_BUTTON_STARTING)
         self.timer_btn.setMinimumWidth(100)
         self.timer_btn.setFixedHeight(56)  # approximate two button heights + spacing
         self.timer_btn.clicked.connect(self._toggle_timer)
@@ -170,7 +191,7 @@ class Floater(QtWidgets.QMainWindow):
         header.addWidget(self.search, 1)
         # Clear history button
         self.btn_clear_history = QtWidgets.QToolButton(text="🗑")
-        self.btn_clear_history.setToolTip("Clear search & issue history")
+        self.btn_clear_history.setToolTip(messages.CLEAR_HISTORY_TOOLTIP)
         self.btn_clear_history.clicked.connect(self._on_clear_history)
         header.addWidget(self.btn_clear_history, 0)
         header.addWidget(self.btn_settings, 0)
@@ -213,31 +234,59 @@ class Floater(QtWidgets.QMainWindow):
         # Restore saved column widths
         self.issue_list.restore_column_widths(cfg.issue_list_column_widths)
         
-        self.btn_refresh = QtWidgets.QPushButton("Refresh issues (assigned + worked on)")
+        self.btn_refresh = QtWidgets.QPushButton(messages.REFRESH_ISSUES_BUTTON)
         self.btn_refresh.clicked.connect(self.refresh_assigned)
 
-        self.desc = QtWidgets.QLineEdit()
-        self.desc.setPlaceholderText("Optional description / comment for the worklog")
+        self.grid_filter = QtWidgets.QLineEdit()
+        self.grid_filter.setPlaceholderText(messages.GRID_FILTER_PLACEHOLDER)
+        self.grid_filter.setToolTip(messages.GRID_FILTER_TOOLTIP)
+        self.grid_filter.textChanged.connect(self._on_grid_filter_changed)
 
-        self.allocation_panel = AllocationPanel(self.allocation_service, self.cfg.daily_time_minutes)
+        self.issue_browser_status = QtWidgets.QLabel(messages.ISSUE_BROWSER_INITIAL_STATUS)
+        self.issue_browser_status.setWordWrap(True)
+        self.issue_browser_status.setStyleSheet("QLabel { color: #666; font-size: 11px; }")
+
+        self.desc = QtWidgets.QLineEdit()
+        self.desc.setPlaceholderText(messages.WORKLOG_DESCRIPTION_PLACEHOLDER)
+
+        self.daily_limit_label = QtWidgets.QLabel("")
+        self.daily_limit_label.setWordWrap(True)
+        self.daily_limit_label.setStyleSheet("QLabel { color: #666; font-size: 11px; }")
+
+        self.allocation_panel = AllocationPanel(self.allocation_service, self.cfg.daily_time_seconds)
+        self.allocation_panel.set_jira_base_url(self.cfg.jira_base_url)
         self.allocation_panel.addSelectedIssueRequested.connect(self._add_selected_issue_to_allocation_panel)
         self.allocation_panel.submitRequested.connect(self._submit_allocation)
+        self.allocation_panel.stateChanged.connect(self._persist_allocation_draft)
+        self.allocation_panel.stateChanged.connect(lambda _: self._refresh_submission_controls())
+        self._restore_allocation_draft()
 
         expanded = QtWidgets.QWidget()
         lay_exp = QtWidgets.QVBoxLayout(expanded)
         lay_exp.setContentsMargins(8, 0, 8, 8)
         lay_exp.addWidget(self.btn_refresh)
+        lay_exp.addWidget(self.grid_filter)
+        lay_exp.addWidget(self.issue_browser_status)
         lay_exp.addWidget(self.issue_list, 1)
         lay_exp.addWidget(self.desc)
-        lay_exp.addWidget(self.allocation_panel)
 
         self.expanded = expanded
         self.expanded.setVisible(False)
 
+        self.main_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        self.main_splitter.setChildrenCollapsible(False)
+        self.main_splitter.setHandleWidth(8)
+        self.main_splitter.addWidget(self.allocation_panel)
+        self.main_splitter.addWidget(self.expanded)
+        self.main_splitter.setStretchFactor(0, 1)
+        self.main_splitter.setStretchFactor(1, 1)
+        self.main_splitter.splitterMoved.connect(self._on_main_splitter_moved)
+
         central = QtWidgets.QWidget()
         v = QtWidgets.QVBoxLayout(central)
         v.addWidget(head_widget)
-        v.addWidget(self.expanded, 1)
+        v.addWidget(self.daily_limit_label)
+        v.addWidget(self.main_splitter, 1)
         self.setCentralWidget(central)
 
         # Tray icon + menu with fallback icon
@@ -249,8 +298,8 @@ class Floater(QtWidgets.QMainWindow):
         menu = QtWidgets.QMenu()
         act_show = menu.addAction("Show / Hide")
         act_show.triggered.connect(self.toggle_visibility)
-        act_log5 = menu.addAction("Log +5m to last issue")
-        act_log5.triggered.connect(lambda: self.log_increment(5, to_last=True))
+        self.act_log5 = menu.addAction("Log +5m to last issue")
+        self.act_log5.triggered.connect(lambda: self.log_increment(5, to_last=True))
         menu.addSeparator()
         act_quit = menu.addAction("Quit")
         act_quit.triggered.connect(QtWidgets.QApplication.instance().quit)
@@ -291,29 +340,93 @@ class Floater(QtWidgets.QMainWindow):
         self.worklogFetched.connect(self._on_worklog_fetched)
         self.issueListRerenderRequested.connect(self._rerender_issue_list_from_state)
         self.issueResultsFetched.connect(self._on_issue_results_fetched)
+        self.dailyTotalUpdated.connect(self._on_daily_total_updated)
+        self.selectedIssueParentFetched.connect(self._apply_selected_issue_parent_summary)
+        self.allocationIssueDetailsFetched.connect(self._apply_allocation_issue_details)
+        self.allocationParentSummariesFetched.connect(self._apply_allocation_parent_summaries)
+        self.gridParentSummariesFetched.connect(self._apply_grid_parent_summaries)
+        self._register_shortcuts()
 
         # Position and size window from saved config
         if cfg.expanded:
             self.resize(*self._expanded_size)
             self.expanded.setVisible(True)
             self.btn_expand.setText("▲")
+            self._apply_main_splitter_sizes(self.cfg.expanded_splitter_sizes)
         else:
             self.resize(*self._collapsed_size)
             self.expanded.setVisible(False)
             self.btn_expand.setText("▼")
+            self._apply_main_splitter_sizes([max(260, self.height()), 0])
         
         self.move(cfg.window_x, cfg.window_y)
         # Set reasonable minimum size but not too restrictive
-        self.setMinimumSize(300, 100)  # Prevent window from getting too small but allow flexibility
+        self.setMinimumSize(300, 240)  # Prevent window from getting too small for the always-visible allocation panel
+        self._refresh_submission_controls()
 
     def _delayed_init(self):
         """Initialize clients after window is shown to ensure proper UI updates."""
-        debug = os.environ.get("TEMPOY_DEBUG")
-        if debug:
-            print(f"[TEMPOY DEBUG] _delayed_init called")
+        debug_log("_delayed_init called")
         
         # Initialize clients if config is present
         self.ensure_clients()
+
+    def _next_request_token(self, attr_name: str) -> int:
+        next_token = int(getattr(self, attr_name, 0)) + 1
+        setattr(self, attr_name, next_token)
+        return next_token
+
+    def _is_current_request(self, attr_name: str, request_token: int) -> bool:
+        return int(getattr(self, attr_name, 0)) == int(request_token)
+
+    def _start_background_worker(self, name: str, target, *args):
+        debug_log("Starting background worker: %s", name)
+        threading.Thread(target=target, args=args, daemon=True).start()
+
+    def _set_daily_total_initialized(self, initialized: bool):
+        self._daily_total_initialized = bool(initialized)
+
+    def _set_grid_parent_summary_loading(self, loading: bool):
+        self._grid_parent_summary_loading = bool(loading)
+        self._update_issue_browser_status()
+
+    def _set_selected_issue_time_loading(self):
+        self.time_label.setText(messages.TIME_LOADING)
+
+    def _set_selected_issue_time_failed(self):
+        self.time_label.setText(messages.TIME_FAILED_TO_LOAD)
+
+    def _set_daily_limit_loading_state(self):
+        self.allocation_panel.set_remaining_seconds(0)
+        self.daily_limit_label.setText(messages.DAILY_LIMIT_LOADING)
+        self.daily_limit_label.setStyleSheet("QLabel { color: #1c7ed6; font-size: 11px; font-weight: bold; }")
+        self._set_submit_actions_enabled(False)
+
+    def _apply_allocation_issue_context(self, issue_key: str, *, summary: str, parent_key: str, parent_summary: str, total_logged_seconds: int):
+        self.allocation_panel.set_issue_context(
+            issue_key,
+            summary=summary,
+            parent_key=parent_key,
+            parent_summary=parent_summary,
+            total_logged_seconds=total_logged_seconds,
+        )
+
+    def _begin_startup_hydration(self):
+        self._update_window_title()
+        self._refresh_submission_controls()
+        self._request_daily_total_refresh(allow_during_startup=True, ignore_cache=True)
+
+    def _restore_last_issue_if_needed(self):
+        if self.cfg.last_issue_key:
+            if debug_enabled():
+                debug_log("Restoring last issue: %s", self.cfg.last_issue_key)
+            self._restore_last_issue()
+
+    def _finish_startup_initialization(self):
+        self._startup_complete = True
+        if debug_enabled():
+            debug_log("Startup marked as complete")
+        QtCore.QTimer.singleShot(1000, self._start_periodic_timers)
 
     # ---------- Utility ----------
     def ensure_clients(self) -> bool:
@@ -337,72 +450,37 @@ class Floater(QtWidgets.QMainWindow):
                 QtCore.QTimer.singleShot(100, self._initialize_after_clients)
             
         except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Auth error", f"Failed to initialize clients:\n{human_err(e)}")
+            QtWidgets.QMessageBox.critical(self, messages.AUTH_ERROR_TITLE, messages.auth_error_init_failed(human_err(e)))
             return False
         return True
 
     def _initialize_after_clients(self):
         """Initialize application state after clients are ready - ensures proper startup sequence."""
-        debug = os.environ.get("TEMPOY_DEBUG")
-        if debug:
-            print(f"[TEMPOY DEBUG] _initialize_after_clients called")
+        debug_log("_initialize_after_clients called")
         
         if self._startup_complete:
-            if debug:
-                print(f"[TEMPOY DEBUG] Startup already complete, skipping")
+            debug_log("Startup already complete, skipping")
             return
         
         try:
-            # Step 1: Fetch daily total synchronously like the working paths do
-            if self.worklog_service and self.account_id:
-                if debug:
-                    print(f"[TEMPOY DEBUG] Fetching daily total synchronously")
-                try:
-                    daily_total = self.worklog_service.get_daily_total(account_id=self.account_id)
-                    self._daily_total_secs = daily_total
-                    self._daily_total_cache_time = dt.datetime.now().timestamp()
-                    if debug:
-                        print(f"[TEMPOY DEBUG] Got daily total: {daily_total} seconds")
-                    # Update window title immediately (like log_increment does)
-                    self._update_window_title()
-                except Exception as e:
-                    if debug:
-                        print(f"[TEMPOY DEBUG] Failed to get daily total: {e}")
-                    # Still update title to show "Today: 0m"
-                    self._daily_total_secs = 0
-                    self._update_window_title()
-            
-            # Step 2: Restore last issue if any (this may trigger search/worklog fetches)
-            if self.cfg.last_issue_key:
-                if debug:
-                    print(f"[TEMPOY DEBUG] Restoring last issue: {self.cfg.last_issue_key}")
-                self._restore_last_issue()
-            
-            # Step 3: Mark startup as complete
-            self._startup_complete = True
-            if debug:
-                print(f"[TEMPOY DEBUG] Startup marked as complete")
-            
-            # Step 4: Start periodic timers with a small delay to avoid conflicts
-            QtCore.QTimer.singleShot(1000, self._start_periodic_timers)
+            self._begin_startup_hydration()
+            self._restore_last_issue_if_needed()
+            self._preload_allocation_panel_data()
+            self._finish_startup_initialization()
             
         except Exception as e:
-            if debug:
-                print(f"[TEMPOY DEBUG] Error during initialization: {e}")
+            debug_log("Error during initialization: %s", e)
             # Still mark startup complete to avoid hanging in incomplete state
             self._startup_complete = True
     
     def _start_periodic_timers(self):
         """Start periodic timers after startup is complete."""
-        debug = os.environ.get("TEMPOY_DEBUG")
-        if debug:
-            print(f"[TEMPOY DEBUG] Starting periodic timers")
+        debug_log("Starting periodic timers")
         
         # Start daily total timer (10 minutes)
         self.daily_total_timer.start(600000)
         
-        if debug:
-            print(f"[TEMPOY DEBUG] Periodic timers started")
+        debug_log("Periodic timers started")
     
     def _toggle_timer(self):
         """Toggle timer button action depending on current state.
@@ -438,24 +516,26 @@ class Floater(QtWidgets.QMainWindow):
         """
         # Stopped overrides everything
         if not self._timer_running:
-            self.timer_btn.setText("⏸ Stopped")
+            self.timer_btn.setText(messages.TIMER_BUTTON_STOPPED)
             self.timer_btn.setStyleSheet("QPushButton { background-color: #ff6b6b; color: white; font-weight: bold; }")
+            self._update_reminder_tooltip()
             return
 
         # Paused states
         if self._timer_paused:
             if self._paused_due_to_lock and self._was_locked:
                 # Currently locked
-                self.timer_btn.setText("⏸ Paused (Locked)")
+                self.timer_btn.setText(messages.TIMER_BUTTON_PAUSED_LOCKED)
                 self.timer_btn.setStyleSheet("QPushButton { background-color: #ffa94d; color: #222; font-weight: bold; }")
             elif self._paused_due_to_lock and not self._was_locked:
                 # Lock released; awaiting manual resume
-                self.timer_btn.setText("⏸ Resume?")
+                self.timer_btn.setText(messages.TIMER_BUTTON_RESUME)
                 self.timer_btn.setStyleSheet("QPushButton { background-color: #ffd43b; color: #222; font-weight: bold; }")
             else:
                 # Generic manual pause (future-proof)
-                self.timer_btn.setText("⏸ Paused")
+                self.timer_btn.setText(messages.TIMER_BUTTON_PAUSED)
                 self.timer_btn.setStyleSheet("QPushButton { background-color: #ffec99; color: #222; font-weight: bold; }")
+            self._update_reminder_tooltip()
             return
 
         # Running - let countdown paint it
@@ -472,28 +552,46 @@ class Floater(QtWidgets.QMainWindow):
             return
 
         if self._next_reminder_time is None:
-            self.timer_btn.setText("⏱ Ready")
+            self.timer_btn.setText(messages.TIMER_BUTTON_READY)
             self.timer_btn.setStyleSheet("QPushButton { background-color: #51cf66; color: white; font-weight: bold; }")
+            self._update_reminder_tooltip()
             return
 
         now = time.time()
         remaining = self._next_reminder_time - now
 
         if remaining <= 0:
-            self.timer_btn.setText("⏱ Ready")
+            self.timer_btn.setText(messages.TIMER_BUTTON_READY)
             self.timer_btn.setStyleSheet("QPushButton { background-color: #51cf66; color: white; font-weight: bold; }")
         else:
-            mins, secs = divmod(int(remaining), 60)
-            countdown_text = f"⏱ {mins}:{secs:02d}" if mins > 0 else f"⏱ {secs}s"
+            total_seconds = max(0, int(remaining))
+            countdown_text = messages.reminder_countdown(total_seconds)
             self.timer_btn.setText(countdown_text)
             self.timer_btn.setStyleSheet("QPushButton { background-color: #51cf66; color: white; font-weight: bold; }")
+        self._update_reminder_tooltip()
+
+    def _update_reminder_tooltip(self):
+        if not getattr(self.cfg, "reminder_enabled", True):
+            self.timer_btn.setToolTip(messages.REMINDER_TIMER_DISABLED_TOOLTIP)
+            return
+        if not self._timer_running:
+            self.timer_btn.setToolTip(messages.REMINDER_TIMER_STOPPED_TOOLTIP)
+            return
+        if self._next_reminder_time is None:
+            self.timer_btn.setToolTip(messages.REMINDER_TIMER_READY_TOOLTIP)
+            return
+        self.timer_btn.setToolTip(messages.reminder_timer_next(self.reminder_service.format_local_time(self._next_reminder_time)))
     
     def _reset_reminder(self):
         self.reminder_timer.stop()
-        mins = int(self.cfg.reminder_minutes or 0)
-        if mins > 0 and self._timer_running and not self._timer_paused:
-            self.reminder_timer.start(mins * 60 * 1000)
-            self._next_reminder_time = time.time() + (mins * 60)
+        next_reminder = self.reminder_service.next_reminder_datetime(
+            reminder_enabled=bool(getattr(self.cfg, "reminder_enabled", True)),
+            reminder_value=str(getattr(self.cfg, "reminder_time", "1500") or "1500"),
+        )
+        if next_reminder and self._timer_running and not self._timer_paused:
+            remaining_seconds = max(0, int((next_reminder - dt.datetime.now()).total_seconds()))
+            self.reminder_timer.start(max(1, remaining_seconds * 1000))
+            self._next_reminder_time = time.time() + remaining_seconds
         else:
             self._next_reminder_time = None
         self._update_timer_button()
@@ -659,9 +757,7 @@ class Floater(QtWidgets.QMainWindow):
             issues_to_refresh = issues_to_refresh[:max_refresh]
         
         if issues_to_refresh:
-            debug = os.environ.get("TEMPOY_DEBUG")
-            if debug:
-                print(f"[TEMPOY DEBUG] Periodic refresh for {len(issues_to_refresh)} issues")
+            debug_log("Periodic refresh for %s issues", len(issues_to_refresh))
             # Run in background thread to avoid blocking UI
             threading.Thread(target=self._fetch_and_update_worklogs, 
                            args=(issues_to_refresh, False), daemon=True).start()
@@ -715,17 +811,24 @@ class Floater(QtWidgets.QMainWindow):
         """Track manual resizing to update config."""
         super().resizeEvent(event)
         
-        debug = os.environ.get("TEMPOY_DEBUG")
+        debug = debug_enabled()
         if debug:
             new_size = event.size()
             old_size = event.oldSize()
             is_programmatic = getattr(self, '_programmatic_resize', False)
-            print(f"[TEMPOY DEBUG] ResizeEvent: {old_size.width()}x{old_size.height()} -> {new_size.width()}x{new_size.height()}, programmatic: {is_programmatic}")
+            debug_log(
+                "ResizeEvent: %sx%s -> %sx%s, programmatic: %s",
+                old_size.width(),
+                old_size.height(),
+                new_size.width(),
+                new_size.height(),
+                is_programmatic,
+            )
         
         # Don't track resize if it's programmatic (from expand/collapse)
         if getattr(self, '_programmatic_resize', False):
             if debug:
-                print(f"[TEMPOY DEBUG] Ignoring programmatic resize")
+                debug_log("Ignoring programmatic resize")
             return
         
         # Update config with new size (debounced to avoid too frequent saves)
@@ -741,20 +844,20 @@ class Floater(QtWidgets.QMainWindow):
     def _on_resize_finished(self):
         """Called after user finishes resizing window."""
         size = self.size()
-        debug = os.environ.get("TEMPOY_DEBUG")
+        debug = debug_enabled()
         
         if self.btn_expand.isChecked():  # Currently expanded
             self.cfg.expanded_width = size.width()
             self.cfg.expanded_height = size.height()
             self._expanded_size = (self.cfg.expanded_width, self.cfg.expanded_height)
             if debug:
-                print(f"[TEMPOY DEBUG] Saved expanded size: {size.width()}x{size.height()}")
+                debug_log("Saved expanded size: %sx%s", size.width(), size.height())
         else:  # Currently collapsed
             self.cfg.collapsed_width = size.width()
             self.cfg.collapsed_height = size.height()
             self._collapsed_size = (self.cfg.collapsed_width, self.cfg.collapsed_height)
             if debug:
-                print(f"[TEMPOY DEBUG] Saved collapsed size: {size.width()}x{size.height()}")
+                debug_log("Saved collapsed size: %sx%s", size.width(), size.height())
         
         ConfigManager.save(self.cfg)
     
@@ -782,13 +885,18 @@ class Floater(QtWidgets.QMainWindow):
     def _verify_resize(self, expected_size):
         """Verify that resize actually worked."""
         actual_size = self.size()
-        debug = os.environ.get("TEMPOY_DEBUG")
+        debug = debug_enabled()
         if debug:
-            print(f"[TEMPOY DEBUG] Resize verification - Expected: {expected_size}, Actual: {actual_size.width()}x{actual_size.height()}")
+            debug_log(
+                "Resize verification - Expected: %s, Actual: %sx%s",
+                expected_size,
+                actual_size.width(),
+                actual_size.height(),
+            )
             
         if (actual_size.width(), actual_size.height()) != expected_size:
             if debug:
-                print(f"[TEMPOY DEBUG] Resize verification FAILED - forcing resize again")
+                debug_log("Resize verification FAILED - forcing resize again")
             # Force resize again
             self._programmatic_resize = True
             self.resize(*expected_size)
@@ -817,28 +925,55 @@ class Floater(QtWidgets.QMainWindow):
         if new_x != window.x() or new_y != window.y():
             self.move(new_x, new_y)
 
+    def _apply_main_splitter_sizes(self, sizes: List[int]):
+        self._applying_splitter_sizes = True
+        try:
+            normalized_sizes = [max(1, int(size)) for size in sizes[:2]]
+            if len(normalized_sizes) < 2:
+                normalized_sizes.extend([1] * (2 - len(normalized_sizes)))
+            self.main_splitter.setSizes(normalized_sizes)
+        finally:
+            QtCore.QTimer.singleShot(0, lambda: setattr(self, '_applying_splitter_sizes', False))
+
+    def _on_main_splitter_moved(self, _pos: int, _index: int):
+        if self._applying_splitter_sizes or not self.btn_expand.isChecked():
+            return
+        if hasattr(self, '_splitter_timer'):
+            self._splitter_timer.stop()
+        else:
+            self._splitter_timer = QtCore.QTimer()
+            self._splitter_timer.setSingleShot(True)
+            self._splitter_timer.timeout.connect(self._save_splitter_sizes)
+        self._splitter_timer.start(250)
+
+    def _save_splitter_sizes(self):
+        sizes = [max(1, int(size)) for size in self.main_splitter.sizes()[:2]]
+        if len(sizes) == 2:
+            self.cfg.expanded_splitter_sizes = sizes
+            ConfigManager.save(self.cfg)
+
     # ---------- UI callbacks ----------
     def on_toggle_expand(self, expanded: bool):
         current_size = self.size()
-        debug = os.environ.get("TEMPOY_DEBUG")
+        debug = debug_enabled()
         
         if debug:
-            print(f"[TEMPOY DEBUG] Toggle: was_expanded={self._is_expanded}, switching_to_expanded={expanded}")
-            print(f"[TEMPOY DEBUG] Current size: {current_size.width()}x{current_size.height()}")
-            print(f"[TEMPOY DEBUG] Saved collapsed: {self.cfg.collapsed_width}x{self.cfg.collapsed_height}")
-            print(f"[TEMPOY DEBUG] Saved expanded: {self.cfg.expanded_width}x{self.cfg.expanded_height}")
+            debug_log("Toggle: was_expanded=%s, switching_to_expanded=%s", self._is_expanded, expanded)
+            debug_log("Current size: %sx%s", current_size.width(), current_size.height())
+            debug_log("Saved collapsed: %sx%s", self.cfg.collapsed_width, self.cfg.collapsed_height)
+            debug_log("Saved expanded: %sx%s", self.cfg.expanded_width, self.cfg.expanded_height)
         
         # Save current size based on the state we're LEAVING (using our tracked state)
         if self._is_expanded:  # We were expanded, now collapsing - save current as expanded size
             self.cfg.expanded_width = current_size.width()
             self.cfg.expanded_height = current_size.height()
             if debug:
-                print(f"[TEMPOY DEBUG] Saving current size as expanded: {current_size.width()}x{current_size.height()}")
+                debug_log("Saving current size as expanded: %sx%s", current_size.width(), current_size.height())
         else:  # We were collapsed, now expanding - save current as collapsed size
             self.cfg.collapsed_width = current_size.width()
             self.cfg.collapsed_height = current_size.height()
             if debug:
-                print(f"[TEMPOY DEBUG] Saving current size as collapsed: {current_size.width()}x{current_size.height()}")
+                debug_log("Saving current size as collapsed: %sx%s", current_size.width(), current_size.height())
         
         # Update our tracked state
         self._is_expanded = expanded
@@ -858,18 +993,18 @@ class Floater(QtWidgets.QMainWindow):
         if expanded:
             target_size = self._expanded_size
             if debug:
-                print(f"[TEMPOY DEBUG] Switching to expanded, target size: {target_size}")
+                debug_log("Switching to expanded, target size: %s", target_size)
         else:
             target_size = self._collapsed_size
             if debug:
-                print(f"[TEMPOY DEBUG] Switching to collapsed, target size: {target_size}")
+                debug_log("Switching to collapsed, target size: %s", target_size)
         
         # Use programmatic resize flag to prevent tracking this resize
         self._programmatic_resize = True
         
         # Force resize window to target size with multiple methods
         if debug:
-            print(f"[TEMPOY DEBUG] About to resize to: {target_size}")
+            debug_log("About to resize to: %s", target_size)
         
         # Method 1: Direct resize
         self.resize(*target_size)
@@ -879,13 +1014,23 @@ class Floater(QtWidgets.QMainWindow):
         
         # Method 3: Process events to ensure resize takes effect
         QtWidgets.QApplication.processEvents()
+
+        if expanded:
+            self._apply_main_splitter_sizes(self.cfg.expanded_splitter_sizes)
+        else:
+            self._apply_main_splitter_sizes([max(260, target_size[1] - 24), 0])
         
         # Verify the resize worked
         actual_size = self.size()
         if debug:
-            print(f"[TEMPOY DEBUG] After resize - Actual size: {actual_size.width()}x{actual_size.height()}")
+            debug_log("After resize - Actual size: %sx%s", actual_size.width(), actual_size.height())
             if (actual_size.width(), actual_size.height()) != target_size:
-                print(f"[TEMPOY DEBUG] WARNING: Resize failed! Expected {target_size}, got {actual_size.width()}x{actual_size.height()}")
+                debug_log(
+                    "WARNING: Resize failed! Expected %s, got %sx%s",
+                    target_size,
+                    actual_size.width(),
+                    actual_size.height(),
+                )
         
         if expanded and self.jira:
             # Only refresh if we don't have recent data
@@ -905,14 +1050,16 @@ class Floater(QtWidgets.QMainWindow):
         # Ensure window stays visible on screen after resize completes
         QtCore.QTimer.singleShot(150, self._ensure_window_on_screen)
 
-    def on_issue_selected(self, key: str, summary: str):
+    def _apply_selected_issue(self, key: str, summary: str, *, record_history: bool):
+        request_token = self._next_request_token("_selected_issue_request_token")
         self.cfg.last_issue_key = key
         self._selected_issue_key = key
+        self._selected_issue_id = None
+        raw_issue = self.issue_browser.known_issues_by_key.get(key)
         
-        # Record issue selection (with summary) in history
-        self._record_issue_history(key, summary)
-        # Refresh the combo box to show updated history (always safe now)
-        self._populate_search_history()
+        if record_history:
+            self._record_issue_history(key, summary)
+            self._populate_search_history()
         
         # Create clickable link to the Jira ticket
         if self.cfg.jira_base_url and key:
@@ -921,25 +1068,311 @@ class Floater(QtWidgets.QMainWindow):
         else:
             self.issue_label.setText(f"{key} — {summary}")
         
-        # Get and cache the issue ID for Tempo API calls
-        if self.jira:
-            self._selected_issue_id = self.jira.get_issue_id(key)
+        self._resolve_selected_issue_id_async(key, request_token)
         
         # Update time display for selected issue
-        self._update_selected_issue_time(key)
+        self._update_selected_issue_time(key, request_token=request_token)
 
         # Update parent/epic label
-        self._update_parent_label(key)
+        self._update_parent_label(key, raw_issue=raw_issue)
         
         ConfigManager.save(self.cfg)
+
+    def on_issue_selected(self, key: str, summary: str):
+        self._apply_selected_issue(key, summary, record_history=True)
 
     def _add_selected_issue_to_allocation_panel(self):
         issue_key = self._selected_issue_key or self.cfg.last_issue_key
         if not issue_key:
-            QtWidgets.QMessageBox.information(self, "Allocation", "Select an issue in the grid first.")
+            QtWidgets.QMessageBox.information(self, messages.ALLOCATION_TITLE, messages.ALLOCATION_SELECT_GRID_FIRST)
             return
-        summary = next((snapshot.summary for snapshot in self._current_issue_snapshots if snapshot.issue_key == issue_key), "")
+        summary = next((snapshot.summary for snapshot in self.issue_browser.all_snapshots if snapshot.issue_key == issue_key), "")
+        if not summary:
+            summary = (self.issue_browser.known_issues_by_key.get(issue_key, {}).get("fields", {}) or {}).get("summary", "")
         self.allocation_panel.add_issue(issue_key, summary)
+        self._sync_allocation_panel_context([issue_key])
+
+    def _restore_allocation_draft(self):
+        allocation_draft = self.cfg.allocation_draft if isinstance(self.cfg.allocation_draft, dict) else {"rows": []}
+        state = AllocationState.from_dict(allocation_draft, self.allocation_service.TOTAL_UNITS)
+        if state.rows:
+            self.allocation_panel.set_state(state)
+
+    def _persist_allocation_draft(self, allocation_state):
+        state = allocation_state if isinstance(allocation_state, AllocationState) else self.allocation_panel.current_state()
+        self.cfg.allocation_draft = state.to_dict()
+        ConfigManager.save(self.cfg)
+
+    def _apply_known_allocation_panel_context(self, issue_keys: List[str]) -> tuple[list[str], list[str]]:
+        missing_context_keys: list[str] = []
+        missing_parent_summary_keys: set[str] = set()
+        for issue_key in issue_keys:
+            cached = self._get_cached_worklog(issue_key)
+            context = self.issue_browser.allocation_issue_context(
+                issue_key,
+                raw_issue_by_key=self._raw_issues_by_key,
+                cached_total_seconds=cached[1] if cached else None,
+            )
+            if not context["has_raw_issue"]:
+                missing_context_keys.append(issue_key)
+            parent_key = str(context.get("parent_key", "") or "")
+            parent_summary = str(context.get("parent_summary", "") or "")
+            if parent_key and not parent_summary:
+                missing_parent_summary_keys.add(parent_key)
+            self._apply_allocation_issue_context(
+                issue_key,
+                summary=str(context.get("summary", "") or ""),
+                parent_key=parent_key,
+                parent_summary=parent_summary,
+                total_logged_seconds=max(0, int(context.get("total_logged_seconds", 0) or 0)),
+            )
+        return missing_context_keys, sorted(missing_parent_summary_keys)
+
+    def _sync_allocation_panel_context(self, issue_keys: Optional[List[str]] = None):
+        rows = self.allocation_panel.current_state().rows
+        target_keys = issue_keys or [row.issue_key for row in rows]
+        target_keys = [issue_key for issue_key in target_keys if issue_key]
+        if not target_keys:
+            return
+        missing_context_keys, missing_parent_summary_keys = self._apply_known_allocation_panel_context(target_keys)
+        if not self.jira:
+            return
+        if not missing_context_keys and not missing_parent_summary_keys:
+            return
+        request_token = self._next_request_token("_allocation_context_request_token")
+        self._start_background_worker(
+            "allocation-context",
+            self._fetch_allocation_context_in_background,
+            sorted(set(target_keys)),
+            sorted(set(missing_context_keys)),
+            missing_parent_summary_keys,
+            request_token,
+        )
+
+    def _fetch_allocation_context_in_background(
+        self,
+        target_keys: List[str],
+        missing_context_keys: List[str],
+        missing_parent_summary_keys: List[str],
+        request_token: int,
+    ):
+        if not self.jira:
+            return
+        fetched_issues: List[Dict] = []
+        parent_keys_to_fetch = set(missing_parent_summary_keys)
+        if missing_context_keys:
+            try:
+                fetched_issues = self.jira.search_by_keys(
+                    missing_context_keys,
+                    fields=["summary", "parent", "customfield_10014"],
+                )
+            except Exception as error:
+                debug_log("Failed to fetch allocation issue context: %s", error)
+            for issue in fetched_issues:
+                fields = issue.get("fields", {}) if isinstance(issue, dict) else {}
+                raw_parent_text, raw_parent_key = self.issue_catalog.extract_parent_info(fields)
+                parent_key, parent_summary = self.issue_catalog.split_parent_text(raw_parent_text, raw_parent_key)
+                if parent_key and not parent_summary:
+                    parent_keys_to_fetch.add(parent_key)
+            if fetched_issues:
+                self.allocationIssueDetailsFetched.emit(fetched_issues, request_token)
+
+        if parent_keys_to_fetch:
+            parent_summaries: dict[str, str] = {}
+            try:
+                parent_issues = self.jira.search_by_keys(sorted(parent_keys_to_fetch), fields=["summary"]) or []
+                for issue in parent_issues:
+                    parent_key = str(issue.get("key") or "")
+                    parent_summary = str((issue.get("fields", {}) or {}).get("summary", "") or "")
+                    if parent_key and parent_summary:
+                        parent_summaries[parent_key] = parent_summary
+            except Exception as error:
+                debug_log("Failed to fetch allocation parent summaries: %s", error)
+            if parent_summaries:
+                self.allocationParentSummariesFetched.emit(parent_summaries, request_token)
+
+    @QtCore.Slot(object, int)
+    def _apply_allocation_issue_details(self, issues, request_token: int):
+        if not self._is_current_request("_allocation_context_request_token", request_token):
+            debug_log("Discarding stale allocation issue details for token %s", request_token)
+            return
+        if not issues:
+            return
+        normalized_issues = list(issues)
+        self._cache_known_issues(normalized_issues)
+        issue_keys: List[str] = []
+        for issue in normalized_issues:
+            issue_key = issue.get("key")
+            if issue_key:
+                self._raw_issues_by_key[issue_key] = issue
+                issue_keys.append(issue_key)
+        if issue_keys:
+            self._apply_known_allocation_panel_context(issue_keys)
+
+    @QtCore.Slot(object, int)
+    def _apply_allocation_parent_summaries(self, parent_summaries, request_token: int):
+        if not self._is_current_request("_allocation_context_request_token", request_token):
+            debug_log("Discarding stale allocation parent summaries for token %s", request_token)
+            return
+        if not parent_summaries:
+            return
+        summary_map = dict(parent_summaries)
+        for row in self.allocation_panel.current_state().rows:
+            issue_key = row.issue_key
+            context = self.issue_browser.allocation_issue_context(
+                issue_key,
+                raw_issue_by_key=self._raw_issues_by_key,
+            )
+            parent_key = str(context.get("parent_key", "") or "")
+            if not parent_key or parent_key not in summary_map:
+                continue
+            self._apply_allocation_issue_context(
+                issue_key,
+                summary=str(context.get("summary", "") or ""),
+                parent_key=parent_key,
+                parent_summary=summary_map[parent_key],
+                total_logged_seconds=max(0, int(context.get("total_logged_seconds", 0) or 0)),
+            )
+
+    def _preload_allocation_panel_data(self):
+        issue_keys = [row.issue_key for row in self.allocation_panel.current_state().rows if row.issue_key]
+        if not issue_keys:
+            return
+        self._sync_allocation_panel_context(issue_keys)
+        self._start_worklog_fetch(issue_keys, force_refresh=False)
+
+    def _cache_known_issues(self, issues: List[Dict]):
+        self.issue_browser.cache_known_issues(issues)
+
+    def _render_filtered_issue_list(self, preferred_key: Optional[str] = None, *, update_selection_context: bool = False):
+        filtered_snapshots = self.issue_browser.apply_filter(self.grid_filter.text())
+        self._current_issue_snapshots = filtered_snapshots
+        visible_issue_keys = self.issue_browser.visible_issue_keys()
+        self._current_issues = visible_issue_keys
+        self.issue_list.populate_snapshots(filtered_snapshots)
+        self._fetch_epic_parent_summaries()
+        self._apply_last_logged_cache(visible_issue_keys)
+        self._update_ui_from_cache(visible_issue_keys)
+
+        current_key = self._selected_issue_key or self.cfg.last_issue_key
+        select_key = self.issue_browser.choose_selection(
+            preferred_key,
+            current_key,
+            update_selection_context=update_selection_context,
+        )
+
+        if select_key:
+            self._select_issue_in_list(select_key)
+            summary = next((snapshot.summary for snapshot in filtered_snapshots if snapshot.issue_key == select_key), "")
+            if update_selection_context or select_key != current_key:
+                self._apply_selected_issue(select_key, summary, record_history=False)
+            elif select_key == current_key:
+                self._update_parent_label(select_key, raw_issue=self.issue_browser.known_issues_by_key.get(select_key))
+        else:
+            self.issue_list.clearSelection()
+        self._update_issue_browser_status()
+
+    def _on_grid_filter_changed(self, text: str):
+        self._render_filtered_issue_list()
+
+    def _select_issue_from_search_results(self, issues: List[Dict], preferred_key: Optional[str] = None):
+        if not issues:
+            return
+        self._cache_known_issues(issues)
+        issue_by_key = {issue.get("key"): issue for issue in issues if issue.get("key")}
+        selected_issue = issue_by_key.get(preferred_key) if preferred_key else None
+        if selected_issue is None:
+            selected_issue = issues[0]
+        issue_key = selected_issue.get("key", "")
+        summary = (selected_issue.get("fields", {}) or {}).get("summary", "")
+        if issue_key:
+            self.on_issue_selected(issue_key, summary)
+            if issue_key in self._current_issues:
+                self._select_issue_in_list(issue_key)
+
+    def _configured_day_seconds(self) -> int:
+        return max(0, int(self.cfg.daily_time_seconds))
+
+    def _remaining_daily_seconds(self) -> int:
+        return max(0, self._configured_day_seconds() - max(0, int(self._daily_total_secs)))
+
+    def _set_submit_actions_enabled(self, enabled: bool):
+        for button in self._increment_buttons.values():
+            button.setEnabled(enabled)
+        if hasattr(self, "act_log5"):
+            self.act_log5.setEnabled(enabled)
+        if not enabled:
+            self.allocation_panel.submit_button.setEnabled(False)
+
+    def _refresh_submission_controls(self):
+        configured_day_seconds = self._configured_day_seconds()
+        remaining_seconds = self._remaining_daily_seconds()
+        logged_seconds = max(0, int(self._daily_total_secs))
+
+        if self.account_id and not self._daily_total_initialized:
+            self._set_daily_limit_loading_state()
+            return
+
+        self.allocation_panel.set_remaining_seconds(remaining_seconds)
+        self._set_submit_actions_enabled(True)
+
+        if configured_day_seconds <= 0:
+            self.daily_limit_label.setText(messages.DAILY_LIMIT_ZERO)
+            self.daily_limit_label.setStyleSheet("QLabel { color: #c92a2a; font-size: 11px; font-weight: bold; }")
+            return
+
+        limit_str = self._format_secs(configured_day_seconds)
+        logged_str = self._format_secs(logged_seconds)
+        remaining_str = self._format_secs(remaining_seconds)
+        if remaining_seconds <= 0:
+            self.daily_limit_label.setText(messages.daily_limit_reached(logged_str, limit_str))
+            self.daily_limit_label.setStyleSheet("QLabel { color: #c92a2a; font-size: 11px; font-weight: bold; }")
+        else:
+            self.daily_limit_label.setText(messages.daily_limit_remaining(remaining_str, limit_str, logged_str))
+            self.daily_limit_label.setStyleSheet("QLabel { color: #666; font-size: 11px; }")
+
+    def _set_issue_browser_status(self, text: str, *, tone: str = "neutral"):
+        tone_styles = {
+            "neutral": "QLabel { color: #666; font-size: 11px; }",
+            "busy": "QLabel { color: #1c7ed6; font-size: 11px; font-weight: bold; }",
+            "warning": "QLabel { color: #c92a2a; font-size: 11px; font-weight: bold; }",
+            "success": "QLabel { color: #2b8a3e; font-size: 11px; }",
+        }
+        self.issue_browser_status.setText(text)
+        self.issue_browser_status.setStyleSheet(tone_styles.get(tone, tone_styles["neutral"]))
+
+    def _update_issue_browser_status(self):
+        status = self.issue_browser.status()
+        text = status.text
+        tone = status.tone
+        if self._grid_parent_summary_loading:
+            text = messages.issue_browser_enriching_status(text)
+            if tone not in {"warning", "busy"}:
+                tone = "busy"
+        self._set_issue_browser_status(text, tone=tone)
+
+    def _register_shortcuts(self):
+        self._shortcuts = [
+            QtGui.QShortcut(QtGui.QKeySequence("Ctrl+R"), self, activated=self.refresh_assigned),
+            QtGui.QShortcut(QtGui.QKeySequence("Ctrl+K"), self, activated=self._focus_main_search),
+            QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+F"), self, activated=self._focus_grid_filter),
+            QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+A"), self, activated=self._add_selected_issue_to_allocation_panel),
+            QtGui.QShortcut(QtGui.QKeySequence("Escape"), self, activated=self._clear_grid_filter_shortcut),
+        ]
+
+    def _focus_main_search(self):
+        self.search.setFocus()
+        self.search.lineEdit().selectAll()
+
+    def _focus_grid_filter(self):
+        if not self.btn_expand.isChecked():
+            self.btn_expand.setChecked(True)
+        self.grid_filter.setFocus()
+        self.grid_filter.selectAll()
+
+    def _clear_grid_filter_shortcut(self):
+        if self.grid_filter.hasFocus() and self.grid_filter.text():
+            self.grid_filter.clear()
 
     def on_search(self):
         if not self.ensure_clients():
@@ -953,7 +1386,7 @@ class Floater(QtWidgets.QMainWindow):
         try:
             issues = self.jira.search(query)
             if not issues:
-                QtWidgets.QMessageBox.information(self, "Search", "No issues found.")
+                QtWidgets.QMessageBox.information(self, messages.SEARCH_TITLE, messages.SEARCH_NO_ISSUES)
                 return
             # Prefer selecting exact key if query looks like one
             preferred_key = None
@@ -961,16 +1394,18 @@ class Floater(QtWidgets.QMainWindow):
                 preferred_key = query
             elif self.cfg.last_issue_key in [i.get("key") for i in issues]:
                 preferred_key = self.cfg.last_issue_key
-            self._display_issue_results(issues, preferred_key)
+            self._select_issue_from_search_results(issues, preferred_key)
         except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Search failed", human_err(e))
+            QtWidgets.QMessageBox.critical(self, messages.SEARCH_FAILED_TITLE, human_err(e))
 
     def refresh_assigned(self):
         if not self.ensure_clients():
             return
+        self.btn_refresh.setEnabled(False)
+        self._set_issue_browser_status(messages.ISSUE_BROWSER_REFRESHING, tone="busy")
         if self._current_issue_snapshots:
             self._rerender_issue_list_from_state()
-        threading.Thread(target=self._refresh_assigned_in_background, daemon=True).start()
+        self._start_background_worker("refresh-assigned", self._refresh_assigned_in_background)
 
     def _refresh_assigned_in_background(self):
         try:
@@ -1004,7 +1439,7 @@ class Floater(QtWidgets.QMainWindow):
                 
                 except Exception as e:
                     # If Tempo lookup fails, just use assigned issues
-                    print(f"Warning: Could not fetch recent worked issues: {human_err(e)}")
+                    debug_log("Could not fetch recent worked issues: %s", human_err(e))
             
             preferred_key = self.cfg.last_issue_key if self.cfg.last_issue_key in [i.get("key") for i in all_issues] else None
             self.issueResultsFetched.emit(all_issues, preferred_key, {
@@ -1012,10 +1447,11 @@ class Floater(QtWidgets.QMainWindow):
                 "worked_keys": worked_issue_keys,
             })
         except Exception as e:
-            QtCore.QTimer.singleShot(0, lambda: QtWidgets.QMessageBox.critical(self, "Load failed", human_err(e)))
+            QtCore.QTimer.singleShot(0, lambda: self._handle_issue_refresh_failure(human_err(e)))
 
     @QtCore.Slot(object, object, object)
     def _on_issue_results_fetched(self, issues, preferred_key, metadata):
+        self.btn_refresh.setEnabled(True)
         self._display_issue_results(
             issues,
             preferred_key,
@@ -1023,13 +1459,17 @@ class Floater(QtWidgets.QMainWindow):
             worked_keys=metadata.get("worked_keys", set()),
         )
 
+    def _handle_issue_refresh_failure(self, message: str):
+        self.btn_refresh.setEnabled(True)
+        self._set_issue_browser_status(messages.issue_browser_refresh_failed_status(message), tone="warning")
+        QtWidgets.QMessageBox.critical(self, messages.LOAD_FAILED_TITLE, message)
+
     def _fetch_epic_parent_summaries(self):
         """Fetch summaries for epic/parent keys that need them."""
         if not self.jira:
             return
         
         keys_to_fetch = set()
-        items_to_update = []
         
         # Collect all epic/parent keys that need summaries
         for i in range(self.issue_list.topLevelItemCount()):
@@ -1038,40 +1478,72 @@ class Floater(QtWidgets.QMainWindow):
                 child = parent.child(j)
                 epic_key = child.data(2, QtCore.Qt.UserRole)
                 if epic_key and isinstance(epic_key, str):
-                    keys_to_fetch.add(epic_key)
-                    items_to_update.append((child, epic_key))
+                    known_parent = self.issue_browser.known_issues_by_key.get(epic_key) or self._raw_issues_by_key.get(epic_key) or {}
+                    known_summary = str((known_parent.get("fields", {}) or {}).get("summary", "") or "") if isinstance(known_parent, dict) else ""
+                    if known_summary:
+                        self.issue_list.update_parent_summary(epic_key, known_summary)
+                    else:
+                        keys_to_fetch.add(epic_key)
         
         if not keys_to_fetch:
+            self._set_grid_parent_summary_loading(False)
             return
-        
+
+        request_token = self._next_request_token("_grid_parent_summary_request_token")
+        self._set_grid_parent_summary_loading(True)
+        self._start_background_worker(
+            "grid-parent-summaries",
+            self._fetch_grid_parent_summaries_in_background,
+            sorted(keys_to_fetch),
+            request_token,
+        )
+
+    def _fetch_grid_parent_summaries_in_background(self, parent_keys: List[str], request_token: int):
+        if not self.jira or not parent_keys:
+            return
+        summaries: dict[str, str] = {}
         try:
-            # Fetch all needed epic/parent issues at once
-            epic_issues = self.jira.search_by_keys(sorted(keys_to_fetch), fields=["summary"])
-            
-            # Create lookup map
-            summaries = {}
-            for issue in epic_issues:
-                issue_key = issue.get("key")
-                summary = issue.get("fields", {}).get("summary", "")
+            parent_issues = self.jira.search_by_keys(parent_keys, fields=["summary"]) or []
+            for issue in parent_issues:
+                issue_key = str(issue.get("key") or "")
+                summary = str((issue.get("fields", {}) or {}).get("summary", "") or "")
                 if issue_key:
                     summaries[issue_key] = summary
-            
-            # Update the items with fetched summaries
-            for child, epic_key in items_to_update:
-                summary = summaries.get(epic_key, "")
-                if summary:
-                    child.setText(2, f"{epic_key}: {summary}")
-                else:
-                    child.setText(2, epic_key)  # Keep just the key if no summary found
-                    
+            self.gridParentSummariesFetched.emit(parent_issues, request_token)
         except Exception as e:
-            # Silently fail - epic/parent summaries are nice-to-have
-            debug = os.environ.get("TEMPOY_DEBUG")
-            if debug:
-                print(f"[DEBUG] Failed to fetch epic/parent summaries: {e}")
+            debug_log("Failed to fetch epic/parent summaries: %s", e)
+
+    @QtCore.Slot(object, int)
+    def _apply_grid_parent_summaries(self, parent_issues, request_token: int):
+        if not self._is_current_request("_grid_parent_summary_request_token", request_token):
+            debug_log("Discarding stale grid parent summaries for token %s", request_token)
+            return
+        self._grid_parent_summary_loading = False
+        issues = list(parent_issues or [])
+        if not issues:
+            self._update_issue_browser_status()
+            return
+        self._cache_known_issues(issues)
+        for issue in issues:
+            issue_key = str(issue.get("key") or "")
+            summary = str((issue.get("fields", {}) or {}).get("summary", "") or "")
+            if not issue_key:
+                continue
+            self.issue_list.update_parent_summary(issue_key, summary)
+        self._update_issue_browser_status()
 
     def log_increment(self, minutes: int, to_last: bool=False):
         if not self.ensure_clients():
+            return
+        requested_seconds = int(minutes * 60)
+        remaining_seconds = self._remaining_daily_seconds()
+        if requested_seconds > remaining_seconds:
+            QtWidgets.QMessageBox.information(
+                self,
+                messages.DAILY_LIMIT_TITLE,
+                messages.daily_limit_increment_disabled(self._format_secs(remaining_seconds), minutes),
+            )
+            self._refresh_submission_controls()
             return
         if to_last:
             key = self.cfg.last_issue_key
@@ -1091,7 +1563,7 @@ class Floater(QtWidgets.QMainWindow):
             else:
                 key = ""
         if not key:
-            QtWidgets.QMessageBox.information(self, "Select issue", "Pick or search for an issue first.")
+            QtWidgets.QMessageBox.information(self, messages.SELECT_ISSUE_TITLE, messages.SELECT_ISSUE_MESSAGE)
             return
         
         # Get issue ID for Tempo API - this is required!
@@ -1100,13 +1572,18 @@ class Floater(QtWidgets.QMainWindow):
             issue_id = self.jira.get_issue_id(key)
         elif not to_last:
             issue_id = self._selected_issue_id
+
+        if not issue_id and self.worklog_service:
+            issue_id = self.worklog_service.resolve_issue_ids([key]).get(key)
+            if key == self._selected_issue_key:
+                self._selected_issue_id = issue_id
             
         if not issue_id:
-            QtWidgets.QMessageBox.critical(self, "Missing Issue ID", 
+            QtWidgets.QMessageBox.critical(self, messages.MISSING_ISSUE_ID_TITLE, 
                 f"Could not get issue ID for {key}. Please refresh the issue list and try again.")
             return
             
-        seconds = int(minutes * 60)
+        seconds = requested_seconds
         desc = self.desc.text().strip()
         try:
             wl = self.tempo.create_worklog(
@@ -1117,7 +1594,7 @@ class Floater(QtWidgets.QMainWindow):
                 when=dt.datetime.now(),
                 description=desc
             )
-            self.tray.showMessage(APP_NAME, f"Logged +{minutes}m to {key}", QtWidgets.QSystemTrayIcon.Information, 4000)
+            self.tray.showMessage(APP_NAME, messages.tray_logged(minutes, key), QtWidgets.QSystemTrayIcon.Information, 4000)
             
             self._optimistically_update_issue_after_log(key, seconds)
             self._start_worklog_fetch([key], force_refresh=True)
@@ -1130,9 +1607,10 @@ class Floater(QtWidgets.QMainWindow):
             self._daily_total_secs += seconds
             self._daily_total_cache_time = dt.datetime.now().timestamp()
             self._update_window_title()
+            self._refresh_submission_controls()
             
         except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Log failed", human_err(e))
+            QtWidgets.QMessageBox.critical(self, messages.LOG_FAILED_TITLE, human_err(e))
 
     def _optimistically_update_issue_after_log(self, issue_key: str, seconds: int):
         today_str = dt.date.today().strftime("%Y-%m-%d")
@@ -1145,6 +1623,10 @@ class Floater(QtWidgets.QMainWindow):
             self._worklog_cache.invalidate(f"worklog:{issue_key}", reason="new_worklog")
         self._cache_last_logged(issue_key, today_str)
         self.issue_list.update_last_logged(issue_key, self._format_relative_time(today_str))
+        refreshed_cached = self._get_cached_worklog(issue_key)
+        if refreshed_cached:
+            _, total_secs = refreshed_cached
+            self.allocation_panel.set_issue_context(issue_key, total_logged_seconds=total_secs)
         self.issueListRerenderRequested.emit()
 
     def open_settings(self):
@@ -1153,7 +1635,10 @@ class Floater(QtWidgets.QMainWindow):
             ConfigManager.save(self.cfg)
             self.setWindowFlag(QtCore.Qt.WindowStaysOnTopHint, self.cfg.always_on_top)
             self.show()  # refresh flags
-            self.allocation_panel.set_daily_time_minutes(self.cfg.daily_time_minutes)
+            self.allocation_panel.set_daily_time_seconds(self.cfg.daily_time_seconds)
+            self.allocation_panel.set_jira_base_url(self.cfg.jira_base_url)
+            self._sync_allocation_panel_context()
+            self._refresh_submission_controls()
             self._reset_reminder()
 
     def _submit_allocation(self, allocation_state):
@@ -1161,16 +1646,35 @@ class Floater(QtWidgets.QMainWindow):
             return
         state = allocation_state
         if not self.allocation_service.validate(state):
-            QtWidgets.QMessageBox.warning(self, "Allocation", "Allocation must sum exactly to 100% before submit.")
+            QtWidgets.QMessageBox.warning(self, messages.ALLOCATION_TITLE, messages.ALLOCATION_SUM_MUST_BE_100)
             return
         if not state.rows:
-            QtWidgets.QMessageBox.information(self, "Allocation", "Add at least one issue to submit the day.")
+            QtWidgets.QMessageBox.information(self, messages.ALLOCATION_TITLE, messages.ALLOCATION_ADD_ONE_ISSUE)
             return
-        allocations = self.allocation_service.allocations_to_seconds(state, self.cfg.daily_time_minutes)
-        resolved_issue_ids = self.worklog_service.resolve_issue_ids([row.issue_key for row in state.rows])
+        remaining_seconds = self._remaining_daily_seconds()
+        allocations = self.allocation_service.allocations_to_total_seconds(state, remaining_seconds)
+        submittable_rows = [row for row in state.rows if allocations.get(row.issue_key, 0) > 0]
+        if not submittable_rows:
+            QtWidgets.QMessageBox.information(
+                self,
+                messages.ALLOCATION_TITLE,
+                messages.ALLOCATION_NO_NONZERO,
+            )
+            self._persist_allocation_draft(self.allocation_panel.current_state())
+            return
+        planned_seconds = sum(allocations.get(row.issue_key, 0) for row in submittable_rows)
+        if planned_seconds > remaining_seconds:
+            QtWidgets.QMessageBox.warning(
+                self,
+                messages.ALLOCATION_TITLE,
+                messages.allocation_exceeds_remaining(self._format_secs(remaining_seconds)),
+            )
+            self._refresh_submission_controls()
+            return
+        resolved_issue_ids = self.worklog_service.resolve_issue_ids([row.issue_key for row in submittable_rows])
         successes = []
         failures = []
-        for row in state.rows:
+        for row in submittable_rows:
             issue_id = resolved_issue_ids.get(row.issue_key)
             if not issue_id:
                 failures.append(f"{row.issue_key}: missing issue id")
@@ -1194,21 +1698,23 @@ class Floater(QtWidgets.QMainWindow):
             self._daily_total_secs += sum(seconds for _, seconds in successes)
             self._daily_total_cache_time = dt.datetime.now().timestamp()
             self._update_window_title()
+            self._refresh_submission_controls()
         if failures:
+            success_lines = "\n".join(f"- {issue_key}: {seconds // 60}m" for issue_key, seconds in successes)
+            failure_lines = "\n".join(f"- {failure}" for failure in failures)
+            success_section = f"Succeeded:\n{success_lines}\n\n" if success_lines else ""
             QtWidgets.QMessageBox.warning(
                 self,
-                "Allocation submit completed with issues",
-                "Succeeded:\n"
-                + "\n".join(f"- {issue_key}: {seconds // 60}m" for issue_key, seconds in successes)
-                + "\n\nFailed:\n"
-                + "\n".join(f"- {failure}" for failure in failures),
+                messages.ALLOCATION_PARTIAL_FAILURE_TITLE,
+                success_section + "Failed:\n" + failure_lines,
             )
         else:
             QtWidgets.QMessageBox.information(
                 self,
-                "Allocation submitted",
-                "Submitted worklogs for:\n" + "\n".join(f"- {issue_key}: {seconds // 60}m" for issue_key, seconds in successes),
+                messages.ALLOCATION_SUBMITTED_TITLE,
+                messages.ALLOCATION_SUBMITTED_PREFIX + "\n".join(f"- {issue_key}: {seconds // 60}m" for issue_key, seconds in successes),
             )
+        self._persist_allocation_draft(self.allocation_panel.current_state())
 
     def _remind(self):
         # Only show reminder if timer is running
@@ -1216,11 +1722,14 @@ class Floater(QtWidgets.QMainWindow):
             return
         # Play audible cue
         self._play_reminder_sound()
-            
-        self.tray.showMessage("Time reminder", "Don't forget to register your time in Tempo.", QtWidgets.QSystemTrayIcon.Warning, 8000)
         
         # Reset reminder for next cycle
         self._reset_reminder()
+        reminder_body = messages.REMINDER_BODY
+        next_time_text = self._format_local_reminder_time(self._next_reminder_time)
+        if next_time_text:
+            reminder_body = messages.reminder_body_with_next(next_time_text)
+        self.tray.showMessage(messages.REMINDER_TITLE, reminder_body, QtWidgets.QSystemTrayIcon.Warning, 8000)
 
     def _play_reminder_sound(self):
         """Play a short notification sound for the reminder.
@@ -1261,18 +1770,19 @@ class Floater(QtWidgets.QMainWindow):
                 if key == self._selected_issue_key:
                     self._display_selected_issue_time(today_secs, total_secs)
     
-    def _update_selected_issue_time(self, issue_key: str):
+    def _update_selected_issue_time(self, issue_key: str, *, request_token: Optional[int] = None):
         """Update the time display for the currently selected issue."""
-        debug = os.environ.get("TEMPOY_DEBUG")
+        debug = debug_enabled()
+        active_token = self._selected_issue_request_token if request_token is None else request_token
         
         if debug:
-            print(f"[TEMPOY DEBUG] _update_selected_issue_time called for {issue_key}")
-            print(f"[TEMPOY DEBUG] tempo: {bool(self.tempo)}, account_id: {bool(self.account_id)}")
+            debug_log("_update_selected_issue_time called for %s", issue_key)
+            debug_log("tempo: %s, account_id: %s", bool(self.tempo), bool(self.account_id))
         
         if not (self.worklog_service and self.account_id):
             self.time_label.setText("")
             if debug:
-                print(f"[TEMPOY DEBUG] Missing tempo client or account_id - clearing time label")
+                debug_log("Missing tempo client or account_id - clearing time label")
             return
         
         # Check cache first
@@ -1280,14 +1790,14 @@ class Floater(QtWidgets.QMainWindow):
         if cached:
             today_secs, total_secs = cached
             if debug:
-                print(f"[TEMPOY DEBUG] Using cached time data: today={today_secs}s, total={total_secs}s")
-            self._display_selected_issue_time(today_secs, total_secs)
+                debug_log("Using cached time data: today=%ss, total=%ss", today_secs, total_secs)
+            self.worklogFetched.emit(issue_key, self._format_secs(today_secs), self._format_secs(total_secs))
         else:
             # Show loading state and fetch in background
             if debug:
-                print(f"[TEMPOY DEBUG] No cached data - starting background fetch")
-            self.time_label.setText("Loading time...")
-            threading.Thread(target=self._fetch_selected_issue_time, args=(issue_key,), daemon=True).start()
+                debug_log("No cached data - starting background fetch")
+            self._set_selected_issue_time_loading()
+            self._start_background_worker("selected-issue-time", self._fetch_selected_issue_time, issue_key, active_token)
     
     def _display_selected_issue_time(self, today_secs: int, total_secs: int):
         """Display the time information for the selected issue."""
@@ -1295,47 +1805,77 @@ class Floater(QtWidgets.QMainWindow):
         total_str = self._format_secs(total_secs)
         
         if today_secs > 0 or total_secs > 0:
-            self.time_label.setText(f"Today: {today_str} | Total: {total_str}")
+            self.time_label.setText(messages.selected_issue_time(today_str, total_str))
         else:
-            self.time_label.setText("No time logged")
+            self.time_label.setText(messages.TIME_NONE_LOGGED)
     
-    def _fetch_selected_issue_time(self, issue_key: str):
+    def _fetch_selected_issue_time(self, issue_key: str, request_token: int):
         """Fetch time data for selected issue in background thread."""
-        debug = os.environ.get("TEMPOY_DEBUG")
+        debug = debug_enabled()
         try:
             if debug:
-                print(f"[TEMPOY DEBUG] _fetch_selected_issue_time starting for {issue_key}")
+                debug_log("_fetch_selected_issue_time starting for %s", issue_key)
             today_secs, total_secs = self.worklog_service.get_user_issue_time(
                 issue_key=issue_key,
                 account_id=self.account_id,
             )
             
             if debug:
-                print(f"[TEMPOY DEBUG] Fetched time data for {issue_key}: today={today_secs}s, total={total_secs}s")
+                debug_log("Fetched time data for %s: today=%ss, total=%ss", issue_key, today_secs, total_secs)
             
             # Cache the result
             self._cache_worklog(issue_key, today_secs, total_secs)
             
-            # Update UI on main thread
-            QtCore.QTimer.singleShot(0, lambda: self._display_selected_issue_time(today_secs, total_secs))
+            if self._is_current_request("_selected_issue_request_token", request_token) and issue_key == self._selected_issue_key:
+                today_str = self._format_secs(today_secs)
+                total_str = self._format_secs(total_secs)
+                QtCore.QTimer.singleShot(0, lambda: self.worklogFetched.emit(issue_key, today_str, total_str))
+            else:
+                debug_log("Discarding stale selected issue time for %s token %s", issue_key, request_token)
             
         except Exception as e:
             if debug:
-                print(f"[TEMPOY DEBUG] Failed to fetch time for selected issue {issue_key}: {e}")
-            QtCore.QTimer.singleShot(0, lambda: self.time_label.setText("Failed to load time"))
+                debug_log("Failed to fetch time for selected issue %s: %s", issue_key, e)
+            QtCore.QTimer.singleShot(0, lambda: self._apply_selected_issue_time_failure(issue_key, request_token))
+
+    def _apply_selected_issue_time_failure(self, issue_key: str, request_token: int):
+        if not self._is_current_request("_selected_issue_request_token", request_token) or issue_key != self._selected_issue_key:
+            debug_log("Discarding stale selected issue time failure for %s token %s", issue_key, request_token)
+            return
+        self._set_selected_issue_time_failed()
+
+    def _resolve_selected_issue_id_async(self, issue_key: str, request_token: int):
+        if not self.worklog_service:
+            return
+        self._start_background_worker("selected-issue-id", self._fetch_selected_issue_id, issue_key, request_token)
+
+    def _fetch_selected_issue_id(self, issue_key: str, request_token: int):
+        issue_id = None
+        try:
+            if self.worklog_service:
+                issue_id = self.worklog_service.resolve_issue_ids([issue_key]).get(issue_key)
+        except Exception as error:
+            debug_log("Failed to resolve selected issue id for %s: %s", issue_key, error)
+        QtCore.QTimer.singleShot(0, lambda: self._apply_selected_issue_id(issue_key, issue_id, request_token))
+
+    def _apply_selected_issue_id(self, issue_key: str, issue_id: Optional[str], request_token: int):
+        if not self._is_current_request("_selected_issue_request_token", request_token) or issue_key != self._selected_issue_key:
+            debug_log("Discarding stale selected issue id for %s token %s", issue_key, request_token)
+            return
+        self._selected_issue_id = issue_id
 
     # ---------- Worklog enrichment ----------
     def _start_worklog_fetch(self, issue_keys: List[str], force_refresh: bool = False):
         """Start fetching worklog data for issues, using cache when possible."""
-        debug = os.environ.get("TEMPOY_DEBUG")
+        debug = debug_enabled()
         
         if debug:
-            print(f"[TEMPOY DEBUG] _start_worklog_fetch called with {issue_keys}, force_refresh={force_refresh}")
-            print(f"[TEMPOY DEBUG] jira: {bool(self.jira)}, account_id: {bool(self.account_id)}")
+            debug_log("_start_worklog_fetch called with %s, force_refresh=%s", issue_keys, force_refresh)
+            debug_log("jira: %s, account_id: %s", bool(self.jira), bool(self.account_id))
         
         if not (self.jira and self.account_id):
             if debug:
-                print(f"[TEMPOY DEBUG] Missing jira client or account_id - returning early")
+                debug_log("Missing jira client or account_id - returning early")
             return
         
         # Filter out issues that have valid cached data (unless forcing refresh)
@@ -1344,21 +1884,19 @@ class Floater(QtWidgets.QMainWindow):
             issue_keys = [key for key in issue_keys if not self._is_cache_valid(key)]
         
         if debug:
-            print(f"[TEMPOY DEBUG] After cache filtering: {original_count} -> {len(issue_keys)} issues to fetch")
+            debug_log("After cache filtering: %s -> %s issues to fetch", original_count, len(issue_keys))
         
         if issue_keys:
-            # Ensure IDs before launching background thread
-            self._ensure_issue_ids(issue_keys)
             if debug:
-                print(f"[TEMPOY DEBUG] Starting background thread for worklog fetch: {issue_keys}")
+                debug_log("Starting background thread for worklog fetch: %s", issue_keys)
             # Run in background thread to avoid blocking UI
-            threading.Thread(target=self._fetch_and_update_worklogs, args=(issue_keys, True), daemon=True).start()
+            self._start_background_worker("worklog-fetch", self._fetch_and_update_worklogs, issue_keys, True)
         elif debug:
-            print(f"[TEMPOY DEBUG] No issues to fetch (all cached or empty list)")
+            debug_log("No issues to fetch (all cached or empty list)")
 
     def _fetch_and_update_worklogs(self, issue_keys: List[str], update_cache: bool = True):
         """Fetch worklog data for issues and optionally update cache."""
-        debug = os.environ.get("TEMPOY_DEBUG")
+        debug = debug_enabled()
         # Ensure we have issue IDs for all keys up-front to avoid per-issue latency/race
         self._ensure_issue_ids(issue_keys)
         for key in issue_keys:
@@ -1381,7 +1919,7 @@ class Floater(QtWidgets.QMainWindow):
                     )
                 except Exception as e:
                     if debug:
-                        print(f"[TEMPOY DEBUG] Worklog service fetch failed for {key}: {e}")
+                        debug_log("Worklog service fetch failed for %s: %s", key, e)
             
             # Cache the results if requested
             if update_cache:
@@ -1401,13 +1939,13 @@ class Floater(QtWidgets.QMainWindow):
                     if last_logged_date:
                         last_logged = last_logged_date
                         if debug:
-                            print(f"[TEMPOY DEBUG] Found last logged date for {key}: {last_logged_date}")
+                            debug_log("Found last logged date for %s: %s", key, last_logged_date)
                     elif debug:
-                        print(f"[TEMPOY DEBUG] No last logged date found for {key}")
+                        debug_log("No last logged date found for %s", key)
                         
                 except Exception as e:
                     if debug:
-                        print(f"[TEMPOY DEBUG] Last logged date fetch failed for {key}: {e}")
+                        debug_log("Last logged date fetch failed for %s: %s", key, e)
             
             # Update the issue list with last logged date in relative format
             if last_logged:
@@ -1416,17 +1954,31 @@ class Floater(QtWidgets.QMainWindow):
                 self.issue_list.update_last_logged(key, relative_time)
             
             if debug:
-                print(f"[TEMPOY DEBUG] Final time {key}: today={today_secs}s total={total_secs}s")
+                debug_log("Final time %s: today=%ss total=%ss", key, today_secs, total_secs)
             self.worklogFetched.emit(key, today_str, total_str)
         if issue_keys:
             self.issueListRerenderRequested.emit()
 
     def _on_worklog_fetched(self, issue_key: str, today_str: str, total_str: str):
         """Handle worklog data being fetched for any issue."""
+        cached = self._get_cached_worklog(issue_key)
+        if cached:
+            _, total_secs = cached
+            existing_context = self.issue_browser.allocation_issue_context(
+                issue_key,
+                raw_issue_by_key=self._raw_issues_by_key,
+                cached_total_seconds=total_secs,
+            )
+            self._apply_allocation_issue_context(
+                issue_key,
+                summary=str(existing_context.get("summary", "") or ""),
+                parent_key=str(existing_context.get("parent_key", "") or ""),
+                parent_summary=str(existing_context.get("parent_summary", "") or ""),
+                total_logged_seconds=total_secs,
+            )
         if issue_key == self._selected_issue_key:
             # Convert back to seconds for display
             try:
-                cached = self._get_cached_worklog(issue_key)
                 if cached:
                     today_secs, total_secs = cached
                     self._display_selected_issue_time(today_secs, total_secs)
@@ -1434,38 +1986,52 @@ class Floater(QtWidgets.QMainWindow):
                 pass
     
     def _restore_last_issue(self):
-        """Restore the last selected issue from config by simulating a search."""
+        """Restore the last selected issue from config via a background search."""
         last_issue_key = self.cfg.last_issue_key.strip() if self.cfg.last_issue_key else ""
         if not last_issue_key:
             return
         
-        debug = os.environ.get("TEMPOY_DEBUG")
+        debug = debug_enabled()
         if debug:
-            print(f"[TEMPOY DEBUG] Restoring last issue by simulating search: {last_issue_key}")
+            debug_log("Restoring last issue by simulating search: %s", last_issue_key)
         
         # If we don't have clients set up yet, we can't search for issues
         if not (self.jira and self.tempo and self.account_id):
             if debug:
-                print(f"[TEMPOY DEBUG] Clients not ready, cannot restore last issue")
+                debug_log("Clients not ready, cannot restore last issue")
             return
         
-        # Put the last issue key in the search box and trigger search
-        # This ensures we get exactly the same behavior as manual search
+        request_token = self._next_request_token("_restore_issue_request_token")
+
         try:
             if debug:
-                print(f"[TEMPOY DEBUG] Setting search text to: {last_issue_key}")
-            
-            # Set the search text
+                debug_log("Setting search text to: %s", last_issue_key)
             self.search.setCurrentText(last_issue_key)
-            
-            # Call the search function - this will do everything correctly
-            if debug:
-                print(f"[TEMPOY DEBUG] Calling on_search() to trigger full search behavior")
-            self.on_search()
+            self._start_background_worker("restore-last-issue", self._restore_last_issue_in_background, last_issue_key, request_token)
             
         except Exception as e:
             if debug:
-                print(f"[TEMPOY DEBUG] Failed to restore last issue via search {last_issue_key}: {e}")
+                debug_log("Failed to restore last issue via search %s: %s", last_issue_key, e)
+
+    def _restore_last_issue_in_background(self, issue_key: str, request_token: int):
+        debug = debug_enabled()
+        try:
+            issues = self.jira.search(issue_key) if self.jira else []
+            QtCore.QTimer.singleShot(0, lambda: self._apply_restored_issue_search(issue_key, issues, request_token))
+        except Exception as error:
+            if debug:
+                debug_log("Failed to restore last issue %s in background: %s", issue_key, error)
+
+    def _apply_restored_issue_search(self, issue_key: str, issues: List[Dict], request_token: int):
+        if not self._is_current_request("_restore_issue_request_token", request_token):
+            debug_log("Discarding stale restore-last-issue results for token %s", request_token)
+            return
+        if self._selected_issue_key and self._selected_issue_key != issue_key:
+            return
+        if not issues:
+            return
+        preferred_key = issue_key if issue_key in [issue.get("key") for issue in issues] else None
+        self._select_issue_from_search_results(issues, preferred_key)
     
     def _select_issue_in_list(self, issue_key: str):
         """Select a specific issue in the issue list by key."""
@@ -1508,9 +2074,9 @@ class Floater(QtWidgets.QMainWindow):
         self.cfg.issue_list_column_widths = self.issue_list.get_column_widths()
         ConfigManager.save(self.cfg)
         
-        debug = os.environ.get("TEMPOY_DEBUG")
+        debug = debug_enabled()
         if debug:
-            print(f"[TEMPOY DEBUG] Saved column widths: {self.cfg.issue_list_column_widths}")
+            debug_log("Saved column widths: %s", self.cfg.issue_list_column_widths)
     
     def _save_window_state(self):
         """Save current window position and size to config."""
@@ -1534,40 +2100,48 @@ class Floater(QtWidgets.QMainWindow):
         
         # Also save column widths
         self.cfg.issue_list_column_widths = self.issue_list.get_column_widths()
+        if self.btn_expand.isChecked():
+            self.cfg.expanded_splitter_sizes = [max(1, int(size)) for size in self.main_splitter.sizes()[:2]]
         
         ConfigManager.save(self.cfg)
     
     def _update_window_title(self):
         """Update window title to include daily total time."""
-        debug = os.environ.get("TEMPOY_DEBUG")
         if hasattr(self, 'tempo') and self.tempo and self.account_id:
             daily_str = self._format_secs(self._daily_total_secs)
-            base_title = f"{APP_NAME} — Today: {daily_str}"
-            if debug:
-                print(f"[TEMPOY DEBUG] Updating window title to: {base_title}")
+            remaining_str = self._format_secs(self._remaining_daily_seconds())
+            base_title = messages.window_title(APP_NAME, daily_str, remaining_str)
+            debug_log("Updating window title to: %s", base_title)
         else:
             base_title = APP_NAME
-            if debug:
-                print(f"[TEMPOY DEBUG] Using default window title (no clients): {base_title}")
+            debug_log("Using default window title (no clients): %s", base_title)
         self.setWindowTitle(base_title)
+
+    def _on_daily_total_updated(self):
+        self._set_daily_total_initialized(True)
+        self._update_window_title()
+        self._refresh_submission_controls()
     
     def _refresh_daily_total(self):
         """Refresh daily total time in background thread."""
-        debug = os.environ.get("TEMPOY_DEBUG")
+        self._request_daily_total_refresh()
+
+    def _request_daily_total_refresh(self, *, allow_during_startup: bool = False, ignore_cache: bool = False):
+        """Queue a daily-total refresh if startup/cache/lock conditions allow it."""
+        debug = debug_enabled()
         
         if debug:
-            print(f"[TEMPOY DEBUG] _refresh_daily_total called")
-            print(f"[TEMPOY DEBUG] tempo: {bool(self.tempo)}, account_id: {bool(self.account_id)}")
+            debug_log("_request_daily_total_refresh called")
+            debug_log("tempo: %s, account_id: %s", bool(self.tempo), bool(self.account_id))
         
         if not (self.worklog_service and self.account_id):
             if debug:
-                print(f"[TEMPOY DEBUG] Missing tempo client or account_id - cannot refresh daily total")
+                debug_log("Missing tempo client or account_id - cannot refresh daily total")
             return
         
-        # During startup, only allow refresh if we're in initialization phase
-        if not self._startup_complete:
+        if not allow_during_startup and not self._startup_complete:
             if debug:
-                print(f"[TEMPOY DEBUG] Startup not complete - skipping periodic refresh")
+                debug_log("Startup not complete - skipping periodic refresh")
             return
         
         # Check if cache is still valid
@@ -1575,45 +2149,44 @@ class Floater(QtWidgets.QMainWindow):
         cache_age = now - self._daily_total_cache_time
         
         if debug:
-            print(f"[TEMPOY DEBUG] Cache age: {cache_age}s, duration limit: {self._daily_total_cache_duration}s")
+            debug_log("Cache age: %ss, duration limit: %ss", cache_age, self._daily_total_cache_duration)
         
-        if cache_age < self._daily_total_cache_duration:
+        if not ignore_cache and cache_age < self._daily_total_cache_duration:
             if debug:
-                print(f"[TEMPOY DEBUG] Cache still valid - not refreshing daily total")
+                debug_log("Cache still valid - not refreshing daily total")
             return
         
         # Use lock to prevent concurrent fetches
         if not self._daily_total_lock.acquire(blocking=False):
             if debug:
-                print(f"[TEMPOY DEBUG] Daily total fetch already in progress - skipping")
+                debug_log("Daily total fetch already in progress - skipping")
             return
         
         # Fetch in background thread
         if debug:
-            print(f"[TEMPOY DEBUG] Starting background fetch for daily total")
-        threading.Thread(target=self._fetch_daily_total, daemon=True).start()
+            debug_log("Starting background fetch for daily total")
+        self._start_background_worker("daily-total", self._fetch_daily_total)
     
     def _fetch_daily_total(self):
         """Fetch daily total time and update window title."""
-        debug = os.environ.get("TEMPOY_DEBUG")
+        debug = debug_enabled()
         try:
             if debug:
-                print(f"[TEMPOY DEBUG] Fetching daily total for account: {self.account_id}")
+                debug_log("Fetching daily total for account: %s", self.account_id)
             daily_total = self.worklog_service.get_daily_total(account_id=self.account_id)
             self._daily_total_secs = daily_total
             self._daily_total_cache_time = dt.datetime.now().timestamp()
             
             if debug:
-                print(f"[TEMPOY DEBUG] Fetched daily total: {daily_total} seconds")
+                debug_log("Fetched daily total: %s seconds", daily_total)
             
-            # Update UI on main thread
-            QtCore.QTimer.singleShot(0, lambda: self._update_window_title())
+            self.dailyTotalUpdated.emit()
         except Exception as e:
             if debug:
-                print(f"[TEMPOY DEBUG] Failed to fetch daily total: {e}")
+                debug_log("Failed to fetch daily total: %s", e)
             # Set to 0 and update title anyway to show "Today: 0m"
             self._daily_total_secs = 0
-            QtCore.QTimer.singleShot(0, lambda: self._update_window_title())
+            self.dailyTotalUpdated.emit()
         finally:
             # Always release the lock
             try:
@@ -1647,8 +2220,8 @@ class Floater(QtWidgets.QMainWindow):
             return
         reply = QtWidgets.QMessageBox.question(
             self,
-            "Clear History",
-            "Clear all search and selected issue history entries?",
+            messages.CLEAR_HISTORY_TITLE,
+            messages.CLEAR_HISTORY_CONFIRMATION,
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
             QtWidgets.QMessageBox.No
         )
@@ -1735,8 +2308,7 @@ class Floater(QtWidgets.QMainWindow):
         new_hist.insert(0, {"type": "search", "term": query, "ts": now_ts})
         self.cfg.search_history = new_hist[:50]
         ConfigManager.save(self.cfg)
-        if os.environ.get("TEMPOY_DEBUG"):
-            print(f"[TEMPOY DEBUG] Recorded search history: {query}")
+        debug_log("Recorded search history: %s", query)
 
     def _record_issue_history(self, key: str, summary: str):
         key = (key or '').strip()
@@ -1751,8 +2323,7 @@ class Floater(QtWidgets.QMainWindow):
         new_hist.insert(0, {"type": "issue", "term": key, "summary": summary or '', "ts": now_ts})
         self.cfg.search_history = new_hist[:50]
         ConfigManager.save(self.cfg)
-        if os.environ.get("TEMPOY_DEBUG"):
-            print(f"[TEMPOY DEBUG] Recorded issue selection history: {key}")
+        debug_log("Recorded issue selection history: %s", key)
 
     # ---------- Issue ID management ----------
     def _ensure_issue_ids(self, issue_keys: List[str]):
@@ -1763,14 +2334,14 @@ class Floater(QtWidgets.QMainWindow):
         """
         if not (self.jira and issue_keys):
             return
-        debug = os.environ.get("TEMPOY_DEBUG")
+        debug = debug_enabled()
         try:
             resolved = self.jira.ensure_issue_ids(issue_keys)
             if debug and resolved:
-                print(f"[TEMPOY DEBUG] Ensured issue IDs for: {sorted(resolved)}")
+                debug_log("Ensured issue IDs for: %s", sorted(resolved))
         except Exception as e:
             if debug:
-                print(f"[TEMPOY DEBUG] Failed to bulk ensure issue IDs: {e}")
+                debug_log("Failed to bulk ensure issue IDs: %s", e)
 
     # ---------- Unified issue result display ----------
     def _build_issue_snapshots(self, issues: List[Dict]) -> List[IssueSnapshot]:
@@ -1808,58 +2379,39 @@ class Floater(QtWidgets.QMainWindow):
             preferred_key: Issue key to auto-select if present
         """
         if not issues:
+            self._raw_issues_by_key = {}
+            self._assigned_issue_keys = set(assigned_keys or set())
+            self._worked_issue_keys = set(worked_keys or set())
+            self.issue_browser.set_snapshots([])
+            self._current_issue_snapshots = []
+            self._current_issues = []
+            self.issue_list.clear()
+            self._update_issue_browser_status()
             return
+        self._cache_known_issues(issues)
         self._raw_issues_by_key = {issue.get("key"): issue for issue in issues if issue.get("key")}
         self._assigned_issue_keys = set(assigned_keys or set())
         self._worked_issue_keys = set(worked_keys or set())
         snapshots = self._build_issue_snapshots(issues)
-        self._current_issue_snapshots = snapshots
+        self.issue_browser.set_snapshots(snapshots)
         issue_keys = [snapshot.issue_key for snapshot in snapshots]
-        self._current_issues = issue_keys
-        self.issue_list.populate_snapshots(snapshots)
-        # Ensure IDs & epic/parent summaries
-        self._ensure_issue_ids(issue_keys)
-        self._fetch_epic_parent_summaries()
-        # Apply any cached last logged dates immediately (avoid blank flicker)
-        self._apply_last_logged_cache(issue_keys)
-        # Apply cached worklog data then fetch missing
-        self._update_ui_from_cache(issue_keys)
         self._start_worklog_fetch(issue_keys, force_refresh=True)
         # Refresh daily total if safe
         if self._startup_complete:
             self._refresh_daily_total()
-        # Determine selection
-        select_key = None
-        if preferred_key and preferred_key in issue_keys:
-            select_key = preferred_key
-        elif self.cfg.last_issue_key in issue_keys:
-            select_key = self.cfg.last_issue_key
-        else:
-            select_key = issue_keys[0]
-        # Find summary for selected key
-        summary = next((snapshot.summary for snapshot in snapshots if snapshot.issue_key == select_key), "")
-        self.on_issue_selected(select_key, summary)
-        self._select_issue_in_list(select_key)
+        self._render_filtered_issue_list(preferred_key, update_selection_context=True)
+        self._sync_allocation_panel_context()
 
     @QtCore.Slot()
     def _rerender_issue_list_from_state(self):
         if not self._raw_issues_by_key:
             return
-        current_key = self._selected_issue_key or self.cfg.last_issue_key
         snapshots = self._build_issue_snapshots(list(self._raw_issues_by_key.values()))
-        self._current_issue_snapshots = snapshots
-        issue_keys = [snapshot.issue_key for snapshot in snapshots]
-        self._current_issues = issue_keys
-        self.issue_list.populate_snapshots(snapshots)
-        self._ensure_issue_ids(issue_keys)
-        self._fetch_epic_parent_summaries()
-        self._apply_last_logged_cache(issue_keys)
-        self._update_ui_from_cache(issue_keys)
-        if current_key and current_key in issue_keys:
-            self._select_issue_in_list(current_key)
-            self._update_parent_label(current_key)
+        self.issue_browser.set_snapshots(snapshots)
+        self._render_filtered_issue_list(update_selection_context=True)
+        self._sync_allocation_panel_context()
 
-    def _update_parent_label(self, issue_key: str):
+    def _update_parent_label(self, issue_key: str, raw_issue: Optional[Dict] = None):
         """Update the parent/epic label for currently selected issue."""
         if not issue_key:
             self.parent_label.setText("")
@@ -1879,6 +2431,11 @@ class Floater(QtWidgets.QMainWindow):
                     if data_key:
                         epic_key = data_key
                     break
+        if not display_text and raw_issue:
+            fields = raw_issue.get("fields", {}) if isinstance(raw_issue, dict) else {}
+            display_text, lookup_key = self.issue_catalog.extract_parent_info(fields)
+            if lookup_key:
+                epic_key = lookup_key
         if display_text:
             if ":" in display_text:
                 parts = display_text.split(":", 1)
@@ -1886,30 +2443,63 @@ class Floater(QtWidgets.QMainWindow):
                 epic_summary = parts[1].strip()
             else:
                 epic_key = epic_key or display_text.strip()
-        # If we have only key but no summary, attempt fetch
+        self._render_parent_label(epic_key, epic_summary)
         if epic_key and not epic_summary and self.jira:
-            try:
-                res = self.jira.search_by_keys([epic_key], fields=["summary"]) or []
-                if res:
-                    epic_summary = (res[0].get("fields", {}) or {}).get("summary", "") or ""
-            except Exception:
-                pass
-        # Build label
-        if epic_key:
-            if self.cfg.jira_base_url:
-                epic_url = f"{self.cfg.jira_base_url}/browse/{epic_key}"
-                if epic_summary:
-                    short = epic_summary[:80] + ("..." if len(epic_summary) > 80 else "")
-                    self.parent_label.setText(f'<span style="color:#777">Parent:</span> <a href="{epic_url}">{epic_key}</a> — {short}')
-                else:
-                    self.parent_label.setText(f'<span style="color:#777">Parent:</span> <a href="{epic_url}">{epic_key}</a>')
-            else:
-                if epic_summary:
-                    self.parent_label.setText(f"Parent: {epic_key} — {epic_summary}")
-                else:
-                    self.parent_label.setText(f"Parent: {epic_key}")
-        else:
+            self._fetch_selected_issue_parent_summary_async(issue_key, epic_key, self._selected_issue_request_token)
+
+    def _render_parent_label(self, parent_key: Optional[str], parent_summary: str = ""):
+        if not parent_key:
             self.parent_label.setText("")
+            return
+        if self.cfg.jira_base_url:
+            epic_url = f"{self.cfg.jira_base_url}/browse/{parent_key}"
+            if parent_summary:
+                short = parent_summary[:80] + ("..." if len(parent_summary) > 80 else "")
+                self.parent_label.setText(messages.parent_label_html(parent_key, epic_url, short))
+            else:
+                self.parent_label.setText(messages.parent_label_html(parent_key, epic_url))
+        else:
+            if parent_summary:
+                self.parent_label.setText(messages.parent_label_plain(parent_key, parent_summary))
+            else:
+                self.parent_label.setText(messages.parent_label_plain(parent_key))
+
+    def _fetch_selected_issue_parent_summary_async(self, issue_key: str, parent_key: str, request_token: int):
+        if not self.jira:
+            return
+        self._start_background_worker("selected-issue-parent", self._fetch_selected_issue_parent_summary, issue_key, parent_key, request_token)
+
+    def _fetch_selected_issue_parent_summary(self, issue_key: str, parent_key: str, request_token: int):
+        parent_summary = ""
+        try:
+            if self.jira:
+                res = self.jira.search_by_keys([parent_key], fields=["summary"]) or []
+                if res:
+                    parent_summary = (res[0].get("fields", {}) or {}).get("summary", "") or ""
+        except Exception as error:
+            debug_log("Failed to fetch selected issue parent summary for %s: %s", parent_key, error)
+        if parent_summary:
+            self.selectedIssueParentFetched.emit(issue_key, parent_summary, request_token)
+
+    @QtCore.Slot(str, str, int)
+    def _apply_selected_issue_parent_summary(self, issue_key: str, parent_summary: str, request_token: int):
+        if not self._is_current_request("_selected_issue_request_token", request_token) or issue_key != self._selected_issue_key:
+            debug_log("Discarding stale selected issue parent summary for %s token %s", issue_key, request_token)
+            return
+        current_text = self.parent_label.text()
+        parent_key = ""
+        if current_text:
+            import re
+            match = re.search(r'>([^<]+)</a>', current_text)
+            if match:
+                parent_key = match.group(1)
+            elif ":" in current_text:
+                parent_key = current_text.split(":", 1)[1].split("—", 1)[0].strip()
+        if not parent_key:
+            raw_issue = self.issue_browser.known_issues_by_key.get(issue_key) or self._raw_issues_by_key.get(issue_key) or {}
+            fields = raw_issue.get("fields", {}) if isinstance(raw_issue, dict) else {}
+            _, parent_key = self.issue_catalog.extract_parent_info(fields)
+        self._render_parent_label(parent_key, parent_summary)
 
     def _apply_last_logged_cache(self, issue_keys: List[str]):
         """Fill last logged column from cache for provided issue keys."""

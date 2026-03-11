@@ -12,6 +12,7 @@ set -e
 SCRIPT_NAME="$(basename "$0")"
 TEMPOY_DIR="$HOME/.tempoy"
 TEMPOY_LAUNCHER="$TEMPOY_DIR/tempoy"
+TEMPOY_PACKAGE_DIR="$TEMPOY_DIR/tempoy_app"
 
 # Detect OS
 if [[ "$OSTYPE" == "darwin"* ]]; then
@@ -227,7 +228,7 @@ enable_autostart() {
             
             # Quick test - check if dependencies are available
             cd "$TEMPOY_DIR"
-            if source venv/bin/activate 2>/dev/null && python -c "import tempoy" 2>/dev/null; then
+            if source venv/bin/activate 2>/dev/null && python -c "import tempoy; import tempoy_app" 2>/dev/null; then
                 log_success "Tempoy dependencies verified"
             else
                 log_warning "Could not verify Tempoy dependencies"
@@ -395,6 +396,12 @@ show_status() {
         else
             log_error "Tempoy application missing"
         fi
+
+        if [[ -d "$TEMPOY_PACKAGE_DIR" ]]; then
+            log_success "Tempoy package found"
+        else
+            log_error "Tempoy package missing"
+        fi
         
     else
         log_error "Tempoy installation missing: $TEMPOY_DIR"
@@ -404,7 +411,7 @@ show_status() {
     # Check if currently running
     echo
     echo -e "${BLUE}Current status:${RESET}"
-    if pgrep -f "python.*tempoy.py" > /dev/null 2>&1; then
+    if pgrep -f "python.*(tempoy.py|-m tempoy_app)" > /dev/null 2>&1; then
         log_success "Tempoy appears to be running"
     else
         log_warning "Tempoy does not appear to be running"

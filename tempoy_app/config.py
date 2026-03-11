@@ -19,8 +19,9 @@ class AppConfig:
     jira_email: str = ""
     jira_api_token: str = ""
     tempo_api_token: str = ""
-    daily_time_minutes: int = 480
-    reminder_minutes: int = 60
+    daily_time_seconds: int = 28_800
+    reminder_enabled: bool = True
+    reminder_time: str = "1500"
     always_on_top: bool = True
     last_issue_key: str = ""
     expanded: bool = False
@@ -30,8 +31,10 @@ class AppConfig:
     collapsed_height: int = 120
     expanded_width: int = 840
     expanded_height: int = 420
+    expanded_splitter_sizes: List[int] = field(default_factory=lambda: [320, 220])
     search_history: List = field(default_factory=list)
     issue_list_column_widths: List[int] = field(default_factory=lambda: DEFAULT_ISSUE_LIST_COLUMN_WIDTHS.copy())
+    allocation_draft: Dict = field(default_factory=lambda: {"rows": []})
 
     def prune_old_history(self, days_back: int = 3) -> None:
         cutoff_time = time.time() - (days_back * 24 * 60 * 60)
@@ -52,8 +55,11 @@ class AppConfig:
 
     @staticmethod
     def from_dict(data: Dict) -> "AppConfig":
+        raw_data = data or {}
+        legacy_reminder_minutes = raw_data.get("reminder_minutes") if isinstance(raw_data, dict) else None
+        legacy_daily_time_minutes = raw_data.get("daily_time_minutes") if isinstance(raw_data, dict) else None
         cfg = AppConfig()
-        cfg.__dict__.update(data or {})
+        cfg.__dict__.update(raw_data)
         if not hasattr(cfg, "search_history") or cfg.search_history is None:
             cfg.search_history = []
         migrated = []
@@ -68,6 +74,49 @@ class AppConfig:
             cfg.search_history = migrated
         if not hasattr(cfg, "issue_list_column_widths") or cfg.issue_list_column_widths is None:
             cfg.issue_list_column_widths = DEFAULT_ISSUE_LIST_COLUMN_WIDTHS.copy()
+        splitter_sizes = getattr(cfg, "expanded_splitter_sizes", None)
+        if not isinstance(splitter_sizes, list) or len(splitter_sizes) != 2:
+            cfg.expanded_splitter_sizes = [320, 220]
+        else:
+            normalized_sizes = []
+            for raw_value in splitter_sizes[:2]:
+                try:
+                    normalized_sizes.append(max(1, int(raw_value)))
+                except (TypeError, ValueError):
+                    normalized_sizes.append(1)
+            cfg.expanded_splitter_sizes = normalized_sizes
+        if not hasattr(cfg, "allocation_draft") or not isinstance(cfg.allocation_draft, dict):
+            cfg.allocation_draft = {"rows": []}
+        if not isinstance(cfg.allocation_draft.get("rows"), list):
+            cfg.allocation_draft = {"rows": []}
+        if "daily_time_seconds" not in raw_data:
+            try:
+                cfg.daily_time_seconds = max(0, int(legacy_daily_time_minutes or 480) * 60)
+            except (TypeError, ValueError):
+                cfg.daily_time_seconds = 28_800
+        else:
+            try:
+                cfg.daily_time_seconds = max(0, int(cfg.daily_time_seconds))
+            except (TypeError, ValueError):
+                cfg.daily_time_seconds = 28_800
+        if "reminder_enabled" not in raw_data:
+            try:
+                cfg.reminder_enabled = int(legacy_reminder_minutes) > 0
+            except (TypeError, ValueError):
+                cfg.reminder_enabled = True
+        else:
+            cfg.reminder_enabled = bool(cfg.reminder_enabled)
+        reminder_time = str(getattr(cfg, "reminder_time", "1500") or "1500").strip()
+        normalized_digits = "".join(ch for ch in reminder_time if ch.isdigit())
+        if len(normalized_digits) != 4:
+            normalized_digits = "1500"
+        hours = int(normalized_digits[:2])
+        minutes = int(normalized_digits[2:])
+        if hours > 23 or minutes > 59:
+            normalized_digits = "1500"
+        cfg.reminder_time = normalized_digits
+        cfg.__dict__.pop("daily_time_minutes", None)
+        cfg.__dict__.pop("reminder_minutes", None)
         return cfg
 
 
