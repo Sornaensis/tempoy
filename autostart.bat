@@ -11,6 +11,7 @@ set "REG_VALUE=Tempoy"
 set "TEMPOY_HOME=%USERPROFILE%\.tempoy"
 set "CANDIDATE_EXE1=%TEMPOY_HOME%\tempoy.exe"
 set "CANDIDATE_EXE2=%~dp0dist\tempoy\tempoy.exe"
+set "CANDIDATE_PYW_INSTALLED=%TEMPOY_HOME%\tempoy.pyw"
 set "CANDIDATE_PYW=%~dp0tempoy.pyw"
 set "LAUNCHER_VBS=%TEMPOY_HOME%\launch-tempoy.vbs"
 set "ACTION=enable"
@@ -82,6 +83,7 @@ goto :end
 :detect_exe
 if exist "%CANDIDATE_EXE1%" set "TEMPOY_EXE=%CANDIDATE_EXE1%"
 if not defined TEMPOY_EXE if exist "%CANDIDATE_EXE2%" set "TEMPOY_EXE=%CANDIDATE_EXE2%"
+if not defined TEMPOY_EXE if exist "%CANDIDATE_PYW_INSTALLED%" set "TEMPOY_EXE=%CANDIDATE_PYW_INSTALLED%"
 if not defined TEMPOY_EXE if exist "%CANDIDATE_PYW%" set "TEMPOY_EXE=%CANDIDATE_PYW%"
 if defined TEMPOY_EXE (
     if /i "%TEMPOY_EXE:~-4%"==".pyw" (
@@ -117,6 +119,7 @@ echo ERROR: Could not locate Tempoy executable.
 echo Looked for:
 echo   %CANDIDATE_EXE1%
 echo   %CANDIDATE_EXE2%
+echo   %CANDIDATE_PYW_INSTALLED%
 echo   %CANDIDATE_PYW%
 echo Build or install Tempoy first.
 goto :fail

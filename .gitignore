@@ -119,3 +119,5 @@ $RECYCLE.BIN/
 # Backup files
 *.backup
 *.bak
+
+.etc/

@@ -12,6 +12,7 @@ set "SCRIPT_DIR=%~dp0"
 set "TEMPOY_DIR=%USERPROFILE%\.tempoy"
 set "VENV_DIR=%TEMPOY_DIR%\venv"
 set "CONFIG_FILE=%TEMPOY_DIR%\config.json"
+set "PACKAGE_DIR=%TEMPOY_DIR%\tempoy_app"
 
 :: Color codes for output
 set "COLOR_GREEN=[92m"
@@ -121,7 +122,7 @@ if %errorlevel% neq 0 (
 )
 echo %COLOR_GREEN%✓ Dependencies installed (PySide6, requests)%COLOR_RESET%
 
-:: Step 5: Copy tempoy.py
+:: Step 5: Copy Tempoy application payload
 echo.
 echo %COLOR_BLUE%[5/8] Installing Tempoy application...%COLOR_RESET%
 if not exist "%SCRIPT_DIR%tempoy.py" (
@@ -129,14 +130,39 @@ if not exist "%SCRIPT_DIR%tempoy.py" (
     pause
     exit /b 1
 )
+if not exist "%SCRIPT_DIR%tempoy.pyw" (
+    echo %COLOR_RED%ERROR: tempoy.pyw not found in %SCRIPT_DIR%%COLOR_RESET%
+    pause
+    exit /b 1
+)
+if not exist "%SCRIPT_DIR%tempoy_app\__main__.py" (
+    echo %COLOR_RED%ERROR: tempoy_app package not found in %SCRIPT_DIR%%COLOR_RESET%
+    pause
+    exit /b 1
+)
 
+if exist "%TEMPOY_DIR%\tempoy.py" del "%TEMPOY_DIR%\tempoy.py" >nul 2>&1
+if exist "%TEMPOY_DIR%\tempoy.pyw" del "%TEMPOY_DIR%\tempoy.pyw" >nul 2>&1
+if exist "%PACKAGE_DIR%" rmdir /s /q "%PACKAGE_DIR%" >nul 2>&1
 copy "%SCRIPT_DIR%tempoy.py" "%TEMPOY_DIR%\tempoy.py" >nul
 if %errorlevel% neq 0 (
     echo %COLOR_RED%ERROR: Failed to copy tempoy.py%COLOR_RESET%
     pause
     exit /b 1
 )
-echo %COLOR_GREEN%✓ Tempoy application installed%COLOR_RESET%
+copy "%SCRIPT_DIR%tempoy.pyw" "%TEMPOY_DIR%\tempoy.pyw" >nul
+if %errorlevel% neq 0 (
+    echo %COLOR_RED%ERROR: Failed to copy tempoy.pyw%COLOR_RESET%
+    pause
+    exit /b 1
+)
+xcopy "%SCRIPT_DIR%tempoy_app" "%PACKAGE_DIR%\" /E /I /Y /Q >nul
+if errorlevel 2 (
+    echo %COLOR_RED%ERROR: Failed to copy tempoy_app package%COLOR_RESET%
+    pause
+    exit /b 1
+)
+echo %COLOR_GREEN%✓ Tempoy application payload installed%COLOR_RESET%
 
 :: Step 6: Create launcher VBScript (runs without console window)
 echo.
@@ -147,14 +173,14 @@ echo Set objShell = CreateObject("WScript.Shell") > "%TEMPOY_DIR%\tempoy.vbs"
 echo Set objFSO = CreateObject("Scripting.FileSystemObject") >> "%TEMPOY_DIR%\tempoy.vbs"
 echo strDir = objFSO.GetParentFolderName(WScript.ScriptFullName) >> "%TEMPOY_DIR%\tempoy.vbs"
 echo strPython = strDir ^& "\venv\Scripts\pythonw.exe" >> "%TEMPOY_DIR%\tempoy.vbs"
-echo strScript = strDir ^& "\tempoy.py" >> "%TEMPOY_DIR%\tempoy.vbs"
+echo strScript = strDir ^& "\tempoy.pyw" >> "%TEMPOY_DIR%\tempoy.vbs"
 echo objShell.Run strPython ^& " " ^& strScript, 0, False >> "%TEMPOY_DIR%\tempoy.vbs"
 
 :: Create batch launcher for command-line use
 echo @echo off > "%TEMPOY_DIR%\tempoy.bat"
 echo cd /d "%%~dp0" >> "%TEMPOY_DIR%\tempoy.bat"
 echo call venv\Scripts\activate.bat >> "%TEMPOY_DIR%\tempoy.bat"
-echo start /b pythonw tempoy.py %%* >> "%TEMPOY_DIR%\tempoy.bat"
+echo start /b pythonw tempoy.pyw %%* >> "%TEMPOY_DIR%\tempoy.bat"
 
 echo %COLOR_GREEN%✓ Launcher scripts created%COLOR_RESET%
 
@@ -196,17 +222,20 @@ call venv\Scripts\activate.bat
 echo Testing Tempoy launch...
 timeout /t 2 >nul
 
-:: Try to run tempoy briefly to verify it works
-start /wait /min python tempoy.py --help 2>nul
+:: Try to verify imports and startup
+set "VERIFY_OK=0"
+python -c "import tempoy; import tempoy_app; print('✓ Tempoy modules load correctly')" >nul 2>&1
 if %errorlevel% neq 0 (
-    :: If --help fails, just try to import the modules
-    python -c "import tempoy; print('✓ Tempoy modules load correctly')" 2>nul
-    if !errorlevel! neq 0 (
-        echo %COLOR_YELLOW%Warning: Could not fully verify installation, but files are in place.%COLOR_RESET%
-    ) else (
-        echo %COLOR_GREEN%✓ Installation verified%COLOR_RESET%
-    )
+    echo %COLOR_YELLOW%Warning: Module import verification failed.%COLOR_RESET%
 ) else (
+    powershell -Command "& {$proc = Start-Process -FilePath '%VENV_DIR%\Scripts\python.exe' -ArgumentList 'tempoy.py' -WorkingDirectory '%TEMPOY_DIR%' -PassThru; Start-Sleep -Seconds 5; if ($proc.HasExited) { exit 1 } Stop-Process -Id $proc.Id -Force; exit 0 }" >nul 2>&1
+    if !errorlevel! neq 0 (
+        echo %COLOR_YELLOW%Warning: Launcher started incorrectly during verification.%COLOR_RESET%
+    ) else (
+        set "VERIFY_OK=1"
+    )
+)
+if "%VERIFY_OK%"=="1" (
     echo %COLOR_GREEN%✓ Installation verified%COLOR_RESET%
 )
 
@@ -279,8 +308,10 @@ if exist "%TEMPOY_DIR%" (
     :: Remove everything except config files
     if exist "%VENV_DIR%" rmdir /s /q "%VENV_DIR%" 2>nul
     del "%TEMPOY_DIR%\tempoy.py" 2>nul
+    del "%TEMPOY_DIR%\tempoy.pyw" 2>nul
     del "%TEMPOY_DIR%\tempoy.vbs" 2>nul
     del "%TEMPOY_DIR%\tempoy.bat" 2>nul
+    if exist "%PACKAGE_DIR%" rmdir /s /q "%PACKAGE_DIR%" 2>nul
     
     :: Restore config
     if exist "%CONFIG_FILE%.backup" (

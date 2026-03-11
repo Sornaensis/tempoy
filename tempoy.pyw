@@ -8,5 +8,5 @@ Use this instead of tempoy.py to avoid console window issues on Windows.
 
 # Import and run the main application
 if __name__ == "__main__":
-    from tempoy import main
+    from tempoy_app.ui.main_window import main
     main()
