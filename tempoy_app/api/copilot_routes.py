@@ -465,7 +465,7 @@ class CopilotRoutes:
                 continue
             if not field_value.get("required"):
                 continue
-            if field_id in {"summary", "description", "labels", "priority"}:
+            if field_id in {"summary", "description", "labels", "priority", "project", "issuetype"}:
                 continue
             unsupported_required_fields.append(str(field_value.get("name") or field_id))
         if unsupported_required_fields:
