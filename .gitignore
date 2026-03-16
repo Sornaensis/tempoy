@@ -118,6 +118,12 @@ $RECYCLE.BIN/
 
 # Backup files
 *.backup
+
+# Node / TypeScript (vscode-extension)
+node_modules/
+vscode-extension/node_modules/
+vscode-extension/dist/
+*.vsix
 *.bak
 
 .etc/

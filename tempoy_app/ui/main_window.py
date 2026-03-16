@@ -28,6 +28,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from tempoy_app.api.jira import JiraClient
 from tempoy_app.api.tempo import TempoClient
+from tempoy_app.api.tempoy_api import TempoyApiServer
 from tempoy_app.config import AppConfig, ConfigManager
 from tempoy_app.formatting import format_relative_time, format_seconds
 from tempoy_app.logging_utils import audit_log, configure_logging, debug_enabled, debug_log
@@ -116,6 +117,10 @@ class Floater(QtWidgets.QMainWindow):
         # Timer tracking state
         self._timer_running = True  # Start in running state
         self._next_reminder_time = None
+
+        # Copilot API server
+        self._copilot_api_server: Optional[TempoyApiServer] = None
+        self._start_copilot_api_if_enabled()
         
     # Removed legacy dropdown refresh delay flag (now handled by clean data separation)
         
@@ -1493,6 +1498,9 @@ class Floater(QtWidgets.QMainWindow):
         self.issueListRerenderRequested.emit()
 
     def open_settings(self):
+        old_api_enabled = self.cfg.copilot_api_enabled
+        old_api_port = self.cfg.copilot_api_port
+        old_api_mode = self.cfg.copilot_api_mode
         dlg = SettingsDialog(self.cfg, self)
         if dlg.exec() == QtWidgets.QDialog.Accepted:
             ConfigManager.save(self.cfg)
@@ -1503,6 +1511,38 @@ class Floater(QtWidgets.QMainWindow):
             self._sync_allocation_panel_context()
             self._refresh_submission_controls()
             self._reset_reminder()
+            # Handle Copilot API changes
+            api_changed = (
+                self.cfg.copilot_api_enabled != old_api_enabled
+                or self.cfg.copilot_api_port != old_api_port
+                or self.cfg.copilot_api_mode != old_api_mode
+            )
+            if api_changed:
+                self._restart_copilot_api()
+
+    def _start_copilot_api_if_enabled(self) -> None:
+        if not self.cfg.copilot_api_enabled:
+            return
+        try:
+            self._copilot_api_server = TempoyApiServer(port=self.cfg.copilot_api_port)
+            host, port = self._copilot_api_server.start()
+            audit_log("Copilot API started on %s:%d", host, port)
+        except Exception as exc:
+            audit_log("Copilot API failed to start: %s", exc)
+            self._copilot_api_server = None
+
+    def _stop_copilot_api(self) -> None:
+        if self._copilot_api_server is not None:
+            try:
+                self._copilot_api_server.stop()
+                audit_log("Copilot API stopped")
+            except Exception as exc:
+                audit_log("Copilot API stop error: %s", exc)
+            self._copilot_api_server = None
+
+    def _restart_copilot_api(self) -> None:
+        self._stop_copilot_api()
+        self._start_copilot_api_if_enabled()
 
     def _submit_allocation(self, allocation_state):
         if not self.ensure_clients():
@@ -1917,6 +1957,7 @@ class Floater(QtWidgets.QMainWindow):
     def closeEvent(self, event):
         """Persist window state and fully shut down the tray-backed app."""
         self._save_window_state()
+        self._stop_copilot_api()
         if hasattr(self, 'tray'):
             self.tray.hide()
         event.accept()

@@ -1,0 +1,83 @@
+{
+  "name": "tempoy-vscode",
+  "displayName": "Tempoy MCP",
+  "description": "Thin VS Code extension that publishes the Tempoy MCP server to VS Code agents.",
+  "version": "0.1.0",
+  "publisher": "tempoy-local",
+  "private": true,
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Other",
+    "Chat"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:tempoy.checkApiHealth",
+    "onCommand:tempoy.showConnectionStatus",
+    "onCommand:tempoy.openMcpConfiguration",
+    "onCommand:tempoy.startMcpSessionTest"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "tempoy.checkApiHealth",
+        "title": "Tempoy: Check API Health"
+      },
+      {
+        "command": "tempoy.showConnectionStatus",
+        "title": "Tempoy: Show Tempoy Connection Status"
+      },
+      {
+        "command": "tempoy.openMcpConfiguration",
+        "title": "Tempoy: Open MCP Configuration"
+      },
+      {
+        "command": "tempoy.startMcpSessionTest",
+        "title": "Tempoy: Start MCP Session Test"
+      }
+    ],
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "tempoy.mcp-server",
+        "label": "Tempoy MCP Server"
+      }
+    ],
+    "configuration": {
+      "title": "Tempoy MCP",
+      "properties": {
+        "tempoy.apiBaseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Base URL for the local Tempoy API. Leave empty to auto-detect from ~/.tempoy/config.json (default: http://127.0.0.1:8765)."
+        },
+        "tempoy.mcp.pythonCommand": {
+          "type": "string",
+          "default": "python",
+          "description": "Python command used to launch the Tempoy MCP server."
+        },
+        "tempoy.mcp.clientName": {
+          "type": "string",
+          "default": "tempoy-vscode",
+          "description": "Client name used when the MCP server starts Tempoy API sessions."
+        },
+        "tempoy.mcp.serverVersion": {
+          "type": "string",
+          "default": "0.1.0",
+          "description": "Version tag reported for the Tempoy MCP server definition."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "@types/vscode": "^1.100.0",
+    "typescript": "^5.8.3"
+  }
+}

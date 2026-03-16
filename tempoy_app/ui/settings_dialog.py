@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from tempoy_app.config import AppConfig
+from tempoy_app.config import AppConfig, COPILOT_API_MODES, DEFAULT_COPILOT_API_PORT
 from tempoy_app.formatting import format_duration_hms, parse_duration_hms
 
 APP_NAME = "Tempoy"
@@ -71,6 +71,48 @@ class SettingsDialog(QtWidgets.QDialog):
         form.addRow("Reminder time (local)", self.reminder_time)
         form.addRow(self.always_on_top)
 
+        # --- Copilot API section ---
+        copilot_separator = QtWidgets.QFrame()
+        copilot_separator.setFrameShape(QtWidgets.QFrame.HLine)
+        copilot_separator.setFrameShadow(QtWidgets.QFrame.Sunken)
+        form.addRow(copilot_separator)
+
+        copilot_label = QtWidgets.QLabel("<b>Copilot API</b>")
+        form.addRow(copilot_label)
+
+        self.copilot_enabled = QtWidgets.QCheckBox("Enable Copilot API")
+        self.copilot_enabled.setChecked(self.cfg.copilot_api_enabled)
+        self.copilot_enabled.setToolTip(
+            "Start a local HTTP API that allows MCP clients and AI agents to interact with Tempoy."
+        )
+        form.addRow(self.copilot_enabled)
+
+        self.copilot_port = QtWidgets.QSpinBox()
+        self.copilot_port.setRange(1024, 65535)
+        self.copilot_port.setValue(self.cfg.copilot_api_port)
+        self.copilot_port.setToolTip(f"TCP port for the Copilot API (default: {DEFAULT_COPILOT_API_PORT}).")
+        self.copilot_port.setEnabled(self.cfg.copilot_api_enabled)
+        form.addRow("API port", self.copilot_port)
+
+        self.copilot_mode = QtWidgets.QComboBox()
+        mode_labels = [
+            ("read-only", "Read-only"),
+            ("refine-only", "Read + Refine"),
+            ("create-and-refine", "Read + Refine + Create"),
+        ]
+        for value, label in mode_labels:
+            self.copilot_mode.addItem(label, value)
+        current_mode_index = next(
+            (i for i, (v, _) in enumerate(mode_labels) if v == self.cfg.copilot_api_mode), 0
+        )
+        self.copilot_mode.setCurrentIndex(current_mode_index)
+        self.copilot_mode.setToolTip("Controls what agents are allowed to do through the API.")
+        self.copilot_mode.setEnabled(self.cfg.copilot_api_enabled)
+        form.addRow("API mode", self.copilot_mode)
+
+        self.copilot_enabled.toggled.connect(self.copilot_port.setEnabled)
+        self.copilot_enabled.toggled.connect(self.copilot_mode.setEnabled)
+
         buttons = QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         self.button_box = QtWidgets.QDialogButtonBox(buttons)
         self.button_box.accepted.connect(self.accept)
@@ -104,4 +146,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.cfg.reminder_enabled = bool(self.reminder_enabled.isChecked())
         self.cfg.reminder_time = self.reminder_time.time().toString("HHmm")
         self.cfg.always_on_top = bool(self.always_on_top.isChecked())
+        self.cfg.copilot_api_enabled = bool(self.copilot_enabled.isChecked())
+        self.cfg.copilot_api_port = int(self.copilot_port.value())
+        self.cfg.copilot_api_mode = str(self.copilot_mode.currentData())
         super().accept()
