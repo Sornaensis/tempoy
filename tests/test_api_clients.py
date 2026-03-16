@@ -206,6 +206,32 @@ class ApiClientTests(unittest.TestCase):
         self.assertIn("/issue/createmeta/ABC/issuetypes/10", fake_session.get_calls[1]["url"])
         self.assertIn("/issue/createmeta/ABC/issuetypes/11", fake_session.get_calls[2]["url"])
 
+    def test_jira_get_create_schema_handles_paginated_array_format(self) -> None:
+        fake_session = _FakeSession(
+            [
+                _FakeResponse({"issueTypes": [{"id": "10", "name": "Task"}]}),
+                _FakeResponse({
+                    "startAt": 0, "maxResults": 50, "total": 2,
+                    "fields": [
+                        {"fieldId": "summary", "name": "Summary", "required": True, "schema": {"type": "string"}},
+                        {"fieldId": "description", "name": "Description", "required": False, "schema": {"type": "string"}},
+                    ],
+                }),
+            ]
+        )
+        with patch("tempoy_app.api.jira.requests.Session", return_value=fake_session):
+            client = JiraClient("https://example.atlassian.net", "me@example.com", "token")
+
+        schemas = client.get_create_schema("abc")
+
+        self.assertEqual(len(schemas), 1)
+        self.assertEqual(schemas[0]["issueTypeId"], "10")
+        self.assertEqual(schemas[0]["name"], "Task")
+        self.assertIsInstance(schemas[0]["fields"], dict)
+        self.assertIn("summary", schemas[0]["fields"])
+        self.assertIn("description", schemas[0]["fields"])
+        self.assertTrue(schemas[0]["fields"]["summary"]["required"])
+
     def test_jira_create_issue_posts_fields_payload(self) -> None:
         fake_session = _FakeSession([_FakeResponse({"id": "501", "key": "ABC-99"})])
         with patch("tempoy_app.api.jira.requests.Session", return_value=fake_session):

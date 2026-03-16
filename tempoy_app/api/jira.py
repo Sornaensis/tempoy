@@ -113,9 +113,11 @@ class JiraClient:
         normalized_project_key = str(project_key or "").strip().upper()
         if not normalized_project_key:
             raise ValueError("Project key is required")
+        issue_types = self.get_project_issue_types(normalized_project_key)
+        id_to_name = {str(item.get("id") or "").strip(): str(item.get("name") or "").strip() for item in issue_types}
         raw_issue_type_ids = issue_type_ids
         if raw_issue_type_ids is None:
-            raw_issue_type_ids = [str(item.get("id") or "").strip() for item in self.get_project_issue_types(normalized_project_key)]
+            raw_issue_type_ids = list(id_to_name.keys())
         collected: List[Dict] = []
         seen = set()
         for issue_type_id in raw_issue_type_ids:
@@ -123,14 +125,44 @@ class JiraClient:
             if not normalized_issue_type_id or normalized_issue_type_id in seen:
                 continue
             seen.add(normalized_issue_type_id)
-            response = self.session.get(
-                f"{self.base_url}/rest/api/3/issue/createmeta/{normalized_project_key}/issuetypes/{normalized_issue_type_id}",
-                timeout=30,
-            )
-            response.raise_for_status()
-            payload = response.json() or {}
-            if isinstance(payload, dict):
-                collected.append(payload)
+            all_fields: List[Dict] = []
+            start_at = 0
+            while True:
+                response = self.session.get(
+                    f"{self.base_url}/rest/api/3/issue/createmeta/{normalized_project_key}/issuetypes/{normalized_issue_type_id}",
+                    params={"startAt": start_at, "maxResults": 50},
+                    timeout=30,
+                )
+                response.raise_for_status()
+                payload = response.json() or {}
+                if not isinstance(payload, dict):
+                    break
+                # New paginated format: {"startAt", "maxResults", "total", "fields": [...]}
+                fields_value = payload.get("fields")
+                if isinstance(fields_value, list):
+                    all_fields.extend(fields_value)
+                    total = int(payload.get("total") or 0)
+                    start_at += len(fields_value)
+                    if start_at >= total or not fields_value:
+                        break
+                elif isinstance(fields_value, dict):
+                    # Legacy format: {"issueTypeId", "name", "fields": {...}}
+                    collected.append(payload)
+                    break
+                else:
+                    break
+            if all_fields:
+                fields_dict = {}
+                for field_entry in all_fields:
+                    if isinstance(field_entry, dict):
+                        fid = str(field_entry.get("fieldId") or field_entry.get("key") or "").strip()
+                        if fid:
+                            fields_dict[fid] = field_entry
+                collected.append({
+                    "issueTypeId": normalized_issue_type_id,
+                    "name": id_to_name.get(normalized_issue_type_id, ""),
+                    "fields": fields_dict,
+                })
         return collected
 
     def get_edit_schema(self, issue_key: str) -> Dict:
