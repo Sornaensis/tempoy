@@ -63,6 +63,7 @@ class Floater(QtWidgets.QMainWindow):
     allocationIssueDetailsFetched = QtCore.Signal(object, int)
     allocationParentSummariesFetched = QtCore.Signal(object, int)
     gridParentSummariesFetched = QtCore.Signal(object, int)
+    allocationChangedByApi = QtCore.Signal()
     def __init__(self, cfg: AppConfig):
         super().__init__()
         self.cfg = cfg
@@ -120,6 +121,7 @@ class Floater(QtWidgets.QMainWindow):
 
         # Copilot API server
         self._copilot_api_server: Optional[TempoyApiServer] = None
+        self.allocationChangedByApi.connect(self._reload_allocation_from_config)
         self._start_copilot_api_if_enabled()
         
     # Removed legacy dropdown refresh delay flag (now handled by clean data separation)
@@ -967,6 +969,15 @@ class Floater(QtWidgets.QMainWindow):
         if state.rows:
             self.allocation_panel.set_state(state)
 
+    def _reload_allocation_from_config(self):
+        self.cfg = ConfigManager.load()
+        allocation_draft = self.cfg.allocation_draft if isinstance(self.cfg.allocation_draft, dict) else {"rows": []}
+        state = AllocationState.from_dict(allocation_draft, self.allocation_service.TOTAL_UNITS)
+        self.allocation_panel.set_state(state)
+        self._refresh_allocation_panel_data(
+            [row.issue_key for row in state.rows], force_refresh=False,
+        )
+
     def _persist_allocation_draft(self, allocation_state):
         state = allocation_state if isinstance(allocation_state, AllocationState) else self.allocation_panel.current_state()
         self.cfg.allocation_draft = state.to_dict()
@@ -1524,7 +1535,10 @@ class Floater(QtWidgets.QMainWindow):
         if not self.cfg.copilot_api_enabled:
             return
         try:
-            self._copilot_api_server = TempoyApiServer(port=self.cfg.copilot_api_port)
+            self._copilot_api_server = TempoyApiServer(
+                port=self.cfg.copilot_api_port,
+                on_allocation_changed=lambda: self.allocationChangedByApi.emit(),
+            )
             host, port = self._copilot_api_server.start()
             audit_log("Copilot API started on %s:%d", host, port)
         except Exception as exc:

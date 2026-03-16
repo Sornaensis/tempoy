@@ -27,6 +27,7 @@ class TempoyApiServer:
         audit_service: Optional[CopilotAuditService] = None,
         jira_client_factory: Optional[callable] = None,
         allocation_service: Optional[CopilotAllocationService] = None,
+        on_allocation_changed: Optional[callable] = None,
     ):
         self._policy_service = policy_service or CopilotPolicyService(
             config_loader=ConfigManager.load,
@@ -42,6 +43,7 @@ class TempoyApiServer:
         self._allocation_service = allocation_service or CopilotAllocationService(
             config_loader=self._policy_service.get_config,
             config_saver=ConfigManager.save,
+            on_state_changed=on_allocation_changed,
         )
         self._routes = CopilotRoutes(
             policy_service=self._policy_service,

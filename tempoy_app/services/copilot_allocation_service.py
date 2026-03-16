@@ -22,12 +22,14 @@ class CopilotAllocationService:
         allocation_service: Optional[AllocationService] = None,
         daily_total_resolver: Optional[Callable[[AppConfig], Optional[int]]] = None,
         issue_summary_resolver: Optional[Callable[[str], str]] = None,
+        on_state_changed: Optional[Callable[[], None]] = None,
     ):
         self._config_loader = config_loader
         self._config_saver = config_saver
         self._allocation_service = allocation_service or AllocationService()
         self._daily_total_resolver = daily_total_resolver or self._resolve_daily_total_from_clients
         self._issue_summary_resolver = issue_summary_resolver or self._resolve_issue_summary
+        self._on_state_changed = on_state_changed
 
     def get_allocation_draft(self) -> Dict[str, object]:
         config = self._config_loader()
@@ -103,6 +105,11 @@ class CopilotAllocationService:
         config.allocation_draft = state.to_dict()
         if self._config_saver is not None:
             self._config_saver(config)
+        if self._on_state_changed is not None:
+            try:
+                self._on_state_changed()
+            except Exception:
+                pass
         return self._serialize_state(config)
 
     def _serialize_state(self, config: AppConfig) -> Dict[str, object]:
