@@ -26,6 +26,7 @@ class _FakeJiraClient:
         self.create_issue_calls = []
         self.get_edit_schema_calls = []
         self.update_issue_calls = []
+        self.search_children_calls = []
 
     def search_issues(self, **kwargs):
         self.search_calls.append(dict(kwargs))
@@ -134,6 +135,41 @@ class _FakeJiraClient:
             },
         }
         return [issues[key] for key in issue_keys if key in issues]
+
+    def search_children(self, parent_keys, *, fields=None, max_results=50):
+        self.search_children_calls.append({"parent_keys": list(parent_keys), "fields": fields, "max_results": max_results})
+        children = {
+            "ABC-1": [
+                {
+                    "id": "401",
+                    "key": "ABC-10",
+                    "fields": {
+                        "summary": "Child task one",
+                        "status": {"name": "To Do"},
+                        "issuetype": {"name": "Sub-task"},
+                        "project": {"key": "ABC"},
+                        "priority": {"name": "Medium"},
+                        "parent": {"key": "ABC-1", "fields": {"summary": "First issue"}},
+                    },
+                },
+                {
+                    "id": "402",
+                    "key": "ABC-11",
+                    "fields": {
+                        "summary": "Child task two",
+                        "status": {"name": "In Progress"},
+                        "issuetype": {"name": "Sub-task"},
+                        "project": {"key": "ABC"},
+                        "priority": {"name": "Low"},
+                        "parent": {"key": "ABC-1", "fields": {"summary": "First issue"}},
+                    },
+                },
+            ],
+        }
+        result = []
+        for key in parent_keys:
+            result.extend(children.get(key, []))
+        return result
 
     def get_projects(self, max_results=100):
         self.get_projects_calls.append({"max_results": max_results})
@@ -548,9 +584,12 @@ class TempoyApiServerTests(unittest.TestCase):
         self.assertEqual(payload["parents"][0]["key"], "EPIC-1")
         self.assertEqual(payload["related_epic"]["key"], "EPIC-1")
         self.assertEqual(payload["linked_issues"][0]["key"], "ABC-2")
-        self.assertEqual(payload["children"], [])
+        self.assertEqual(len(payload["children"]), 2)
+        self.assertEqual(payload["children"][0]["key"], "ABC-10")
+        self.assertEqual(payload["children"][1]["key"], "ABC-11")
+        self.assertEqual(payload["root_issue"]["children"][0]["key"], "ABC-10")
         self.assertEqual(payload["descendants"], [])
-        self.assertIn("Child discovery is not implemented yet", payload["warnings"])
+        self.assertNotIn("Child discovery is not implemented yet", payload["warnings"])
         self.assertIn("Depth greater than 1 is not implemented yet", payload["warnings"])
 
     def test_issue_hierarchy_requires_session(self) -> None:

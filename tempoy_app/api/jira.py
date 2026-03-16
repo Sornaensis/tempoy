@@ -17,6 +17,7 @@ DEFAULT_SEARCH_FIELDS = [
     "parent",
     "customfield_10014",
     "issuelinks",
+    "assignee",
 ]
 
 
@@ -298,6 +299,14 @@ class JiraClient:
 
     def get_issues_by_keys(self, issue_keys: List[str], *, fields: Optional[List[str]] = None, order_by_updated: bool = False) -> List[Dict]:
         return self.search_by_keys(issue_keys, fields=fields or DEFAULT_SEARCH_FIELDS, order_by_updated=order_by_updated)
+
+    def search_children(self, parent_keys: List[str], *, fields: Optional[List[str]] = None, max_results: int = 50) -> List[Dict]:
+        keys = [k for k in parent_keys if k]
+        if not keys:
+            return []
+        key_list = ", ".join(f'"{self._escape_jql_value(k)}"' for k in keys)
+        jql = f"parent in ({key_list}) ORDER BY issuetype ASC, key ASC"
+        return self._search_jql(jql=jql, max_results=max(1, min(int(max_results), 100)), fields=fields or DEFAULT_SEARCH_FIELDS)
 
     def _search_jql(self, *, jql: str, max_results: int, fields: List[str]) -> List[Dict]:
         payload = {

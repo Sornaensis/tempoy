@@ -140,6 +140,21 @@ class CopilotRoutes:
             for issue in related_issues
             if self._policy_service.is_project_allowed(str(((issue.get("fields") or {}).get("project") or {}).get("key") or ""))
         }
+
+        children_by_parent: dict[str, list[dict]] = {}
+        if include_children:
+            root_keys = [str(issue.get("key") or "") for issue in allowed_root_issues if issue.get("key")]
+            if root_keys:
+                raw_children = jira_client.search_children(root_keys)
+                for child in raw_children:
+                    child_project = str(((child.get("fields") or {}).get("project") or {}).get("key") or "")
+                    if not self._policy_service.is_project_allowed(child_project):
+                        continue
+                    parent_info = (child.get("fields") or {}).get("parent") or {}
+                    parent_key = str(parent_info.get("key") or "")
+                    if parent_key:
+                        children_by_parent.setdefault(parent_key, []).append(child)
+
         analysis_service = JiraAnalysisService(jira_base_url=jira_client.base_url)
         payload = analysis_service.build_hierarchy_payload(
             allowed_root_issues,
@@ -148,6 +163,7 @@ class CopilotRoutes:
             include_linked_issues=include_linked_issues,
             depth=depth,
             include_children=include_children,
+            children_by_parent_key=children_by_parent,
         )
         self._audit_service.log_event(
             operation="issues.hierarchy",
@@ -520,6 +536,7 @@ class CopilotRoutes:
             "priority",
             "parent_key",
             "acceptance_criteria_text",
+            "assignee_account_id",
             "apply",
             "confirm",
         }
@@ -619,6 +636,19 @@ class CopilotRoutes:
                         "from": str(current_fields.get(acceptance_field_id) or ""),
                         "to": acceptance_text.strip(),
                     }
+
+        if "assignee_account_id" in body:
+            requested_change = True
+            assignee_account_id = str(body.get("assignee_account_id") or "").strip()
+            if "assignee" in editable_fields or not editable_fields:
+                fields["assignee"] = None if not assignee_account_id else {"accountId": assignee_account_id}
+                current_assignee = current_fields.get("assignee") or {}
+                changes["assignee_account_id"] = {
+                    "from": str((current_assignee.get("accountId") or "") if isinstance(current_assignee, dict) else ""),
+                    "to": assignee_account_id,
+                }
+            else:
+                warnings.append("Assignee is not editable for this issue")
 
         if not requested_change:
             raise ValueError("At least one editable field change is required")

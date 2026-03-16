@@ -33,6 +33,7 @@ class JiraAnalysisService:
             "children": [],
             "linked_issues": self._normalize_linked_issues(fields.get("issuelinks")),
             "hierarchy_level": self._infer_hierarchy_level(fields.get("issuetype")),
+            "assignee": self._extract_assignee(fields.get("assignee")),
             "raw_url": f"{self._jira_base_url}/browse/{key}" if self._jira_base_url and key else "",
         }
 
@@ -48,18 +49,18 @@ class JiraAnalysisService:
         include_linked_issues: bool = True,
         depth: int = 1,
         include_children: bool = False,
+        children_by_parent_key: Optional[Dict[str, List[Dict]]] = None,
     ) -> Dict[str, object]:
         normalized_roots = self.normalize_issues(root_issues)
         related_lookup = related_issues_by_key or {}
         parents: list[Dict[str, object]] = []
         linked: list[Dict[str, object]] = []
+        children_all: list[Dict[str, object]] = []
         related_epic: Dict[str, object] | None = None
         related_initiative: Dict[str, object] | None = None
         missing_links: list[str] = []
         warnings: list[str] = []
 
-        if include_children:
-            warnings.append("Child discovery is not implemented yet")
         if depth > 1:
             warnings.append("Depth greater than 1 is not implemented yet")
 
@@ -94,11 +95,18 @@ class JiraAnalysisService:
                         continue
                     linked.append(self.normalize_issue(related_issue))
 
+            if include_children and isinstance(root_issue, dict):
+                root_key = str(root_issue.get("key") or "")
+                raw_children = (children_by_parent_key or {}).get(root_key, [])
+                normalized_children = self.normalize_issues(raw_children)
+                root_issue["children"] = normalized_children
+                children_all.extend(normalized_children)
+
         payload: Dict[str, object] = {
             "root_issue": normalized_roots[0] if len(normalized_roots) == 1 else None,
             "root_issues": normalized_roots,
             "parents": parents if include_parents else [],
-            "children": [],
+            "children": children_all,
             "descendants": [],
             "linked_issues": linked if include_linked_issues else [],
             "related_epic": related_epic,
@@ -119,6 +127,17 @@ class JiraAnalysisService:
         if isinstance(value, dict):
             return str(value.get("key") or "")
         return ""
+
+    @staticmethod
+    def _extract_assignee(value: object) -> Optional[Dict[str, str]]:
+        if not isinstance(value, dict):
+            return None
+        account_id = str(value.get("accountId") or "").strip()
+        display_name = str(value.get("displayName") or "").strip()
+        email = str(value.get("emailAddress") or "").strip()
+        if not account_id and not display_name:
+            return None
+        return {"account_id": account_id, "display_name": display_name, "email": email}
 
     @staticmethod
     def _normalize_labels(value: object) -> List[str]:

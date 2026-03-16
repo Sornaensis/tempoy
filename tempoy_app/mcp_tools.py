@@ -104,6 +104,7 @@ TOOL_DEFINITIONS: List[McpToolDefinition] = [
                 "priority": {"type": "string"},
                 "parent_key": {"type": "string"},
                 "acceptance_criteria_text": {"type": "string"},
+                "assignee_account_id": {"type": "string", "description": "Jira account ID of the assignee, or empty string to unassign"},
                 "apply": {"type": "boolean"},
                 "confirm": {"type": "boolean"},
             },
