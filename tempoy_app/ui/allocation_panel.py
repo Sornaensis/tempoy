@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import html
 from dataclasses import replace
 
@@ -217,6 +218,7 @@ class AllocationPanel(QtWidgets.QGroupBox):
     addSelectedIssueRequested = QtCore.Signal()
     submitRequested = QtCore.Signal(object)
     stateChanged = QtCore.Signal(object)
+    dayChanged = QtCore.Signal()
 
     def __init__(self, allocation_service: AllocationService, daily_time_seconds: int, parent=None):
         super().__init__("Daily Allocation", parent)
@@ -228,6 +230,10 @@ class AllocationPanel(QtWidgets.QGroupBox):
         self.jira_base_url: str = ""
         self.issue_context: dict[str, dict[str, object]] = {}
         self._row_widgets: dict[str, AllocationRowWidget] = {}
+
+        self.day_selector = QtWidgets.QComboBox()
+        self._populate_day_selector()
+        self.day_selector.currentIndexChanged.connect(self._on_day_selector_changed)
 
         self.info_label = QtWidgets.QLabel()
         self.empty_state_label = QtWidgets.QLabel("No tickets in today's allocation yet. Select an issue above, then add it here.")
@@ -261,7 +267,13 @@ class AllocationPanel(QtWidgets.QGroupBox):
         button_row.addStretch(1)
         button_row.addWidget(self.submit_button)
 
+        day_row = QtWidgets.QHBoxLayout()
+        day_row.addWidget(QtWidgets.QLabel("Day:"))
+        day_row.addWidget(self.day_selector)
+        day_row.addStretch(1)
+
         layout = QtWidgets.QVBoxLayout(self)
+        layout.addLayout(day_row)
         layout.addWidget(self.info_label)
         layout.addWidget(self.empty_state_label)
         layout.addWidget(self.rows_scroll, 1)
@@ -276,6 +288,35 @@ class AllocationPanel(QtWidgets.QGroupBox):
         self.submit_button.clicked.connect(lambda: self.submitRequested.emit(self.current_state()))
 
         self._refresh_ui()
+
+    # --- Day selector helpers ---
+
+    def _populate_day_selector(self):
+        """Fill the day dropdown with 'Default' (today) plus the past 7 days."""
+        self.day_selector.blockSignals(True)
+        self.day_selector.clear()
+        self.day_selector.addItem("Default (today)", None)
+        today = dt.date.today()
+        for offset in range(1, 8):
+            day = today - dt.timedelta(days=offset)
+            label = day.strftime("%A %Y-%m-%d")
+            self.day_selector.addItem(label, day)
+        self.day_selector.setCurrentIndex(0)
+        self.day_selector.blockSignals(False)
+
+    def _on_day_selector_changed(self, _index: int):
+        self._refresh_ui()
+        self.dayChanged.emit()
+
+    def selected_date(self) -> dt.date:
+        """Return the date represented by the current day-selector choice.
+
+        'Default' returns today's date.
+        """
+        value = self.day_selector.currentData()
+        if isinstance(value, dt.date):
+            return value
+        return dt.date.today()
 
     def set_daily_time_seconds(self, seconds: int):
         self.daily_time_seconds = max(0, int(seconds))

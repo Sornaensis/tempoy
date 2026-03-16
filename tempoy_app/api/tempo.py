@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Tuple
 
 import requests
 
-from tempoy_app.logging_utils import debug_log
+from tempoy_app.logging_utils import audit_log, debug_log, error_log
 
 
 class TempoClient:
@@ -44,9 +44,28 @@ class TempoClient:
             "authorAccountId": account_id,
             "description": description or "",
         }
-        response = self.session.post(f"{self.BASE}/worklogs", json=payload, timeout=30)
-        response.raise_for_status()
-        return response.json()
+        audit_log(
+            "Submitting worklog for %s (%ss at %s %s, description_present=%s)",
+            issue_key,
+            seconds,
+            start_date,
+            start_time,
+            bool(description),
+        )
+        try:
+            response = self.session.post(f"{self.BASE}/worklogs", json=payload, timeout=30)
+            response.raise_for_status()
+            result = response.json()
+            audit_log(
+                "Created worklog for %s (%ss, worklog_id=%s)",
+                issue_key,
+                seconds,
+                result.get("tempoWorklogId") or result.get("id") or "unknown",
+            )
+            return result
+        except Exception as error:
+            error_log("Failed to create worklog for %s: %s", issue_key, error)
+            raise
 
     def get_user_issue_time(
         self,
@@ -117,12 +136,12 @@ class TempoClient:
         debug_log("Final result for {} (ID: {}): today={}s, total={}s", issue_key, issue_id, today_total, total)
         return today_total, total
 
-    def get_user_daily_total(self, *, account_id: str, days_back: int = 1) -> int:
-        today = dt.date.today()
+    def get_user_daily_total(self, *, account_id: str, days_back: int = 1, target_date: Optional[dt.date] = None) -> int:
+        query_date = target_date or dt.date.today()
         params = {
             "worker": account_id,
-            "from": today.strftime("%Y-%m-%d"),
-            "to": today.strftime("%Y-%m-%d"),
+            "from": query_date.strftime("%Y-%m-%d"),
+            "to": query_date.strftime("%Y-%m-%d"),
             "limit": 200,
         }
         daily_total = 0
@@ -149,7 +168,7 @@ class TempoClient:
                     if not start_date:
                         continue
                     try:
-                        if dt.datetime.strptime(start_date, "%Y-%m-%d").date() == today:
+                        if dt.datetime.strptime(start_date, "%Y-%m-%d").date() == query_date:
                             daily_total += int(worklog.get("timeSpentSeconds") or 0)
                     except Exception:
                         pass

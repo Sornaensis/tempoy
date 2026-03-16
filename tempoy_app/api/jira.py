@@ -6,6 +6,20 @@ from typing import Dict, List, Optional, Tuple
 import requests
 
 
+DEFAULT_SEARCH_FIELDS = [
+    "summary",
+    "description",
+    "status",
+    "issuetype",
+    "project",
+    "priority",
+    "labels",
+    "parent",
+    "customfield_10014",
+    "issuelinks",
+]
+
+
 class JiraClient:
     def __init__(self, base_url: str, email: str, api_token: str):
         self.base_url = base_url.rstrip("/")
@@ -66,6 +80,102 @@ class JiraClient:
             pass
         return None
 
+    def get_projects(self, *, max_results: int = 100) -> List[Dict]:
+        response = self.session.get(
+            f"{self.base_url}/rest/api/3/project/search",
+            params={"startAt": 0, "maxResults": max(1, min(int(max_results), 1000))},
+            timeout=30,
+        )
+        response.raise_for_status()
+        data = response.json() or {}
+        values = data.get("values")
+        if isinstance(values, list):
+            return values
+        if isinstance(data, list):
+            return data
+        return []
+
+    def get_project_issue_types(self, project_key: str) -> List[Dict]:
+        normalized_project_key = str(project_key or "").strip().upper()
+        if not normalized_project_key:
+            raise ValueError("Project key is required")
+        response = self.session.get(
+            f"{self.base_url}/rest/api/3/project/{normalized_project_key}",
+            params={"expand": "issueTypes"},
+            timeout=30,
+        )
+        response.raise_for_status()
+        data = response.json() or {}
+        issue_types = data.get("issueTypes")
+        return issue_types if isinstance(issue_types, list) else []
+
+    def get_create_schema(self, project_key: str, *, issue_type_ids: Optional[List[str]] = None) -> List[Dict]:
+        normalized_project_key = str(project_key or "").strip().upper()
+        if not normalized_project_key:
+            raise ValueError("Project key is required")
+        raw_issue_type_ids = issue_type_ids
+        if raw_issue_type_ids is None:
+            raw_issue_type_ids = [str(item.get("id") or "").strip() for item in self.get_project_issue_types(normalized_project_key)]
+        collected: List[Dict] = []
+        seen = set()
+        for issue_type_id in raw_issue_type_ids:
+            normalized_issue_type_id = str(issue_type_id or "").strip()
+            if not normalized_issue_type_id or normalized_issue_type_id in seen:
+                continue
+            seen.add(normalized_issue_type_id)
+            response = self.session.get(
+                f"{self.base_url}/rest/api/3/issue/createmeta/{normalized_project_key}/issuetypes/{normalized_issue_type_id}",
+                timeout=30,
+            )
+            response.raise_for_status()
+            payload = response.json() or {}
+            if isinstance(payload, dict):
+                collected.append(payload)
+        return collected
+
+    def get_edit_schema(self, issue_key: str) -> Dict:
+        normalized_issue_key = str(issue_key or "").strip().upper()
+        if not normalized_issue_key:
+            raise ValueError("Issue key is required")
+        response = self.session.get(
+            f"{self.base_url}/rest/api/3/issue/{normalized_issue_key}/editmeta",
+            timeout=30,
+        )
+        response.raise_for_status()
+        payload = response.json() or {}
+        return payload if isinstance(payload, dict) else {}
+
+    def create_issue(self, fields: Dict[str, object]) -> Dict:
+        if not isinstance(fields, dict) or not fields:
+            raise ValueError("Issue fields are required")
+        response = self.session.post(
+            f"{self.base_url}/rest/api/3/issue",
+            json={"fields": fields},
+            timeout=30,
+        )
+        response.raise_for_status()
+        payload = response.json() or {}
+        issue_key = str(payload.get("key") or "").strip()
+        issue_id = str(payload.get("id") or "").strip()
+        if issue_key and issue_id:
+            self._issue_id_cache[issue_key] = issue_id
+        return payload
+
+    def update_issue(self, issue_key: str, fields: Dict[str, object]) -> Dict:
+        normalized_issue_key = str(issue_key or "").strip().upper()
+        if not normalized_issue_key:
+            raise ValueError("Issue key is required")
+        if not isinstance(fields, dict) or not fields:
+            raise ValueError("Issue fields are required")
+        response = self.session.put(
+            f"{self.base_url}/rest/api/3/issue/{normalized_issue_key}",
+            json={"fields": fields},
+            timeout=30,
+        )
+        response.raise_for_status()
+        payload = response.json() if getattr(response, "status_code", 204) != 204 else {}
+        return payload if isinstance(payload, dict) else {}
+
     def search_assigned(self, max_results: int = 50) -> List[Dict]:
         jql = 'assignee = currentUser() ORDER BY updated DESC'
         return self._search_jql(
@@ -89,6 +199,62 @@ class JiraClient:
             fields=["summary", "status", "issuetype", "project", "priority", "parent", "customfield_10014"],
         )
 
+    def get_issue(self, issue_key: str, *, fields: Optional[List[str]] = None) -> Dict:
+        normalized_issue_key = str(issue_key or "").strip()
+        if not normalized_issue_key:
+            raise ValueError("Issue key is required")
+        response = self.session.get(
+            f"{self.base_url}/rest/api/3/issue/{normalized_issue_key}",
+            params={"fields": ",".join(fields or DEFAULT_SEARCH_FIELDS)},
+            timeout=30,
+        )
+        response.raise_for_status()
+        issue = response.json() or {}
+        issue_id = issue.get("id")
+        if issue_id:
+            self._issue_id_cache[normalized_issue_key] = issue_id
+        return issue
+
+    def search_issues(
+        self,
+        *,
+        query: str = "",
+        project_key: Optional[str] = None,
+        issue_types: Optional[List[str]] = None,
+        status_filters: Optional[List[str]] = None,
+        max_results: int = 25,
+        fields: Optional[List[str]] = None,
+    ) -> List[Dict]:
+        normalized_query = str(query or "").strip()
+        normalized_project_key = str(project_key or "").strip().upper()
+        normalized_issue_types = [str(item or "").strip() for item in (issue_types or []) if str(item or "").strip()]
+        normalized_status_filters = [str(item or "").strip() for item in (status_filters or []) if str(item or "").strip()]
+
+        clauses: List[str] = []
+        if normalized_project_key:
+            clauses.append(f'project = "{self._escape_jql_value(normalized_project_key)}"')
+
+        if normalized_query:
+            if self._looks_like_issue_key(normalized_query):
+                escaped_query = self._escape_jql_value(normalized_query.upper())
+                clauses.append(f'key = "{escaped_query}"')
+            else:
+                escaped_query = self._escape_jql_value(normalized_query)
+                clauses.append(f'summary ~ "{escaped_query}"')
+
+        if normalized_issue_types:
+            issue_type_values = ", ".join(f'"{self._escape_jql_value(value)}"' for value in normalized_issue_types)
+            clauses.append(f"issuetype in ({issue_type_values})")
+
+        if normalized_status_filters:
+            status_values = ", ".join(f'"{self._escape_jql_value(value)}"' for value in normalized_status_filters)
+            clauses.append(f"status in ({status_values})")
+
+        jql = " AND ".join(clauses) if clauses else "ORDER BY updated DESC"
+        if clauses:
+            jql = f"{jql} ORDER BY updated DESC"
+        return self._search_jql(jql=jql, max_results=max(1, min(int(max_results), 100)), fields=fields or DEFAULT_SEARCH_FIELDS)
+
     def search_by_keys(self, issue_keys: List[str], fields: List[str], order_by_updated: bool = False) -> List[Dict]:
         keys = [issue_key for issue_key in issue_keys if issue_key]
         if not keys:
@@ -97,6 +263,9 @@ class JiraClient:
         order_clause = " ORDER BY updated DESC" if order_by_updated else ""
         jql = f'key in ("{key_list}"){order_clause}'
         return self._search_jql(jql=jql, max_results=len(keys), fields=fields)
+
+    def get_issues_by_keys(self, issue_keys: List[str], *, fields: Optional[List[str]] = None, order_by_updated: bool = False) -> List[Dict]:
+        return self.search_by_keys(issue_keys, fields=fields or DEFAULT_SEARCH_FIELDS, order_by_updated=order_by_updated)
 
     def _search_jql(self, *, jql: str, max_results: int, fields: List[str]) -> List[Dict]:
         payload = {
@@ -115,6 +284,18 @@ class JiraClient:
             if issue_key and issue_id:
                 self._issue_id_cache[issue_key] = issue_id
         return issues
+
+    @staticmethod
+    def _escape_jql_value(value: str) -> str:
+        return str(value or "").replace('\\', '\\\\').replace('"', '\\"')
+
+    @staticmethod
+    def _looks_like_issue_key(value: str) -> bool:
+        normalized = str(value or "").strip().upper()
+        if "-" not in normalized:
+            return False
+        prefix, _, number = normalized.partition("-")
+        return bool(prefix and number.isdigit())
 
     def get_issue_worklogs(self, issue_key: str, account_id: Optional[str] = None) -> List[Dict]:
         collected: List[Dict] = []

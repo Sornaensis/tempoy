@@ -48,7 +48,7 @@ class _FakeTempoClient:
     def get_last_logged_date(self, *, issue_key: str, issue_id: str, account_id: str):
         return self.last_logged
 
-    def get_user_daily_total(self, *, account_id: str):
+    def get_user_daily_total(self, *, account_id: str, target_date=None):
         return self.daily_total
 
 

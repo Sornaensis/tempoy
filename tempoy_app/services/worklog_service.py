@@ -62,5 +62,5 @@ class WorklogService:
         issue_id = self.jira.get_issue_id(issue_key)
         return self.tempo.get_last_logged_date(issue_key=issue_key, issue_id=issue_id, account_id=account_id)
 
-    def get_daily_total(self, *, account_id: str) -> int:
-        return self.tempo.get_user_daily_total(account_id=account_id)
+    def get_daily_total(self, *, account_id: str, target_date: "dt.date | None" = None) -> int:
+        return self.tempo.get_user_daily_total(account_id=account_id, target_date=target_date)

@@ -30,7 +30,7 @@ from tempoy_app.api.jira import JiraClient
 from tempoy_app.api.tempo import TempoClient
 from tempoy_app.config import AppConfig, ConfigManager
 from tempoy_app.formatting import format_relative_time, format_seconds
-from tempoy_app.logging_utils import debug_enabled, debug_log
+from tempoy_app.logging_utils import audit_log, configure_logging, debug_enabled, debug_log
 from tempoy_app.models import AllocationState, IssueSnapshot
 from tempoy_app.services.allocation_service import AllocationService
 from tempoy_app.services.cache_service import CacheService
@@ -116,21 +116,6 @@ class Floater(QtWidgets.QMainWindow):
         # Timer tracking state
         self._timer_running = True  # Start in running state
         self._next_reminder_time = None
-
-        # --- New: Paused/lock tracking state ---
-        # _timer_paused differs from stopped: paused preserves remaining countdown and running flag.
-        self._timer_paused = False
-
-        self._paused_due_to_lock = False  # Whether current pause originated from workstation lock
-        self._pause_time = None  # Timestamp when pause started
-        self._remaining_to_next_reminder = None  # Seconds remaining to reminder when paused
-        self._was_locked = False  # Previous poll lock state
-        self._bring_to_front_on_unlock = False  # Defer focusing window until unlock
-
-        # Periodic Windows lock state poller (every 3 seconds)
-        self.lock_check_timer = QtCore.QTimer(self)
-        self.lock_check_timer.timeout.connect(self._check_lock_state)
-        self.lock_check_timer.start(3000)
         
     # Removed legacy dropdown refresh delay flag (now handled by clean data separation)
         
@@ -259,6 +244,8 @@ class Floater(QtWidgets.QMainWindow):
         self.allocation_panel.submitRequested.connect(self._submit_allocation)
         self.allocation_panel.stateChanged.connect(self._persist_allocation_draft)
         self.allocation_panel.stateChanged.connect(lambda _: self._refresh_submission_controls())
+        self.allocation_panel.stateChanged.connect(lambda _: self._schedule_allocation_panel_refresh())
+        self.allocation_panel.dayChanged.connect(self._on_allocation_day_changed)
         self._restore_allocation_draft()
 
         expanded = QtWidgets.QWidget()
@@ -347,6 +334,10 @@ class Floater(QtWidgets.QMainWindow):
         self.gridParentSummariesFetched.connect(self._apply_grid_parent_summaries)
         self._register_shortcuts()
 
+        self._allocation_refresh_timer = QtCore.QTimer(self)
+        self._allocation_refresh_timer.setSingleShot(True)
+        self._allocation_refresh_timer.timeout.connect(self._refresh_allocation_panel_totals)
+
         # Position and size window from saved config
         if cfg.expanded:
             self.resize(*self._expanded_size)
@@ -410,6 +401,28 @@ class Floater(QtWidgets.QMainWindow):
             parent_summary=parent_summary,
             total_logged_seconds=total_logged_seconds,
         )
+
+    def _schedule_allocation_panel_refresh(self):
+        self._allocation_refresh_timer.start(600)
+
+    def _on_allocation_day_changed(self):
+        """Re-fetch the daily total for the newly selected day and refresh controls."""
+        self._daily_total_initialized = False
+        self._daily_total_cache_time = 0  # invalidate cache so refresh is forced
+        self._refresh_submission_controls()
+        self._request_daily_total_refresh(allow_during_startup=True, ignore_cache=True)
+
+    def _refresh_allocation_panel_totals(self):
+        self._refresh_allocation_panel_data(force_refresh=True)
+
+    def _refresh_allocation_panel_data(self, issue_keys: Optional[List[str]] = None, *, force_refresh: bool = False):
+        rows = self.allocation_panel.current_state().rows
+        target_keys = issue_keys or [row.issue_key for row in rows]
+        target_keys = [issue_key for issue_key in target_keys if issue_key]
+        if not target_keys:
+            return
+        self._sync_allocation_panel_context(target_keys)
+        self._start_worklog_fetch(target_keys, force_refresh=force_refresh)
 
     def _begin_startup_hydration(self):
         self._update_window_title()
@@ -483,72 +496,30 @@ class Floater(QtWidgets.QMainWindow):
         debug_log("Periodic timers started")
     
     def _toggle_timer(self):
-        """Toggle timer button action depending on current state.
-
-        Priority order:
-          1. If paused -> resume.
-          2. Else toggle running <-> stopped.
-        """
-        # If currently paused, resume instead of changing running/stopped flag
-        if self._timer_paused:
-            self._resume_timer()
-            return
-
-        # Normal toggle between running and stopped
+        """Toggle the daily reminder between running and stopped."""
         self._timer_running = not self._timer_running
         if self._timer_running:
             # Restart reminders fresh when going from stopped -> running
             self._reset_reminder()
         else:
-            # Stopping clears reminders (distinct from pause which preserves)
+            # Stopping clears any scheduled reminder.
             self.reminder_timer.stop()
             self._next_reminder_time = None
         self._update_timer_button()
     
     def _update_timer_button(self):
-        """Update the timer button appearance based on current state.
-
-        States:
-          - Stopped: red
-          - Paused (Locked): orange (auto pause due to lock while still locked)
-          - Paused (Resume?): yellow (was locked, now unlocked waiting for manual resume)
-          - Running: handled by _update_countdown (green with countdown/ready)
-        """
-        # Stopped overrides everything
+        """Update the reminder button appearance based on current state."""
         if not self._timer_running:
             self.timer_btn.setText(messages.TIMER_BUTTON_STOPPED)
             self.timer_btn.setStyleSheet("QPushButton { background-color: #ff6b6b; color: white; font-weight: bold; }")
             self._update_reminder_tooltip()
             return
 
-        # Paused states
-        if self._timer_paused:
-            if self._paused_due_to_lock and self._was_locked:
-                # Currently locked
-                self.timer_btn.setText(messages.TIMER_BUTTON_PAUSED_LOCKED)
-                self.timer_btn.setStyleSheet("QPushButton { background-color: #ffa94d; color: #222; font-weight: bold; }")
-            elif self._paused_due_to_lock and not self._was_locked:
-                # Lock released; awaiting manual resume
-                self.timer_btn.setText(messages.TIMER_BUTTON_RESUME)
-                self.timer_btn.setStyleSheet("QPushButton { background-color: #ffd43b; color: #222; font-weight: bold; }")
-            else:
-                # Generic manual pause (future-proof)
-                self.timer_btn.setText(messages.TIMER_BUTTON_PAUSED)
-                self.timer_btn.setStyleSheet("QPushButton { background-color: #ffec99; color: #222; font-weight: bold; }")
-            self._update_reminder_tooltip()
-            return
-
-        # Running - let countdown paint it
         self._update_countdown()
     
     def _update_countdown(self):
-        """Update countdown display on timer button (running state only)."""
+        """Update countdown display on the reminder button while running."""
         if not self._timer_running:
-            return
-
-        # If paused, delegate to update button (ensures correct paused style) and exit
-        if self._timer_paused:
-            self._update_timer_button()
             return
 
         if self._next_reminder_time is None:
@@ -588,139 +559,13 @@ class Floater(QtWidgets.QMainWindow):
             reminder_enabled=bool(getattr(self.cfg, "reminder_enabled", True)),
             reminder_value=str(getattr(self.cfg, "reminder_time", "1500") or "1500"),
         )
-        if next_reminder and self._timer_running and not self._timer_paused:
+        if next_reminder and self._timer_running:
             remaining_seconds = max(0, int((next_reminder - dt.datetime.now()).total_seconds()))
             self.reminder_timer.start(max(1, remaining_seconds * 1000))
             self._next_reminder_time = time.time() + remaining_seconds
         else:
             self._next_reminder_time = None
         self._update_timer_button()
-
-    # ---------------- Pausing / Lock Handling -----------------
-    def _pause_timer(self, *, auto_lock: bool = False):
-        """Pause the timer (distinct from stopped). Preserve remaining reminder time."""
-        if self._timer_paused:
-            return
-        if not self._timer_running:
-            # If already stopped, no special pause state
-            return
-        self._timer_paused = True
-        self._paused_due_to_lock = auto_lock
-        self._pause_time = time.time()
-        # Store remaining time to reminder
-        if self._next_reminder_time:
-            remaining = self._next_reminder_time - self._pause_time
-            self._remaining_to_next_reminder = max(0, remaining)
-        else:
-            self._remaining_to_next_reminder = None
-        # Stop the active reminder timer while paused
-        self.reminder_timer.stop()
-        self._update_timer_button()
-
-    def _resume_timer(self):
-        """Resume from paused state, restoring remaining reminder interval."""
-        if not self._timer_paused:
-            return
-        self._timer_paused = False
-        # Restore reminder timer if needed
-        if self._timer_running:
-            if self._remaining_to_next_reminder and self._remaining_to_next_reminder > 0:
-                # Resume with remaining time rather than full interval
-                ms = int(self._remaining_to_next_reminder * 1000)
-                self.reminder_timer.start(ms)
-                self._next_reminder_time = time.time() + self._remaining_to_next_reminder
-            else:
-                self._reset_reminder()
-        # Clear pause meta
-        self._pause_time = None
-        self._remaining_to_next_reminder = None
-        self._paused_due_to_lock = False
-        self._update_timer_button()
-
-    def _check_lock_state(self):
-        """Poll Windows lock state and handle transitions.
-
-        Strategy:
-          - Use Win32 APIs (ctypes) attempting to open the input desktop and switch it.
-          - If SwitchDesktop returns False, treat as locked.
-          - Fallback gracefully on any exception.
-        """
-        if sys.platform != "win32":
-            return
-        try:
-            locked = self._is_workstation_locked()
-        except Exception:
-            # On failure, do not change state (avoid flapping)
-            return
-
-        if locked and not self._was_locked:
-            self._on_lock_detected()
-        elif (not locked) and self._was_locked:
-            self._on_unlock_detected()
-        self._was_locked = locked
-
-    def _is_workstation_locked(self) -> bool:
-        """Return True if workstation appears locked (Windows only)."""
-        import ctypes
-        user32 = ctypes.windll.user32
-        kernel32 = ctypes.windll.kernel32
-        DESKTOP_SWITCHDESKTOP = 0x0100
-        hDesktop = user32.OpenInputDesktop(0, False, DESKTOP_SWITCHDESKTOP)
-        if not hDesktop:
-            # If cannot open input desktop, assume locked (conservative)
-            return True
-        try:
-            result = user32.SwitchDesktop(hDesktop)
-            # When locked, SwitchDesktop returns 0 (False)
-            return not bool(result)
-        finally:
-            user32.CloseDesktop(hDesktop)
-
-    def _on_lock_detected(self):
-        """Handle transition to locked state."""
-        # Only auto-pause if actively running and not already paused
-        if self._timer_running and not self._timer_paused:
-            self._pause_timer(auto_lock=True)
-        # Mark to bring to front on unlock (cannot force focus while locked)
-        self._bring_to_front_on_unlock = True
-        # Increase polling frequency while locked for quicker unlock detection
-        try:
-            if self.lock_check_timer.interval() != 1000:
-                self.lock_check_timer.setInterval(1000)
-        except Exception:
-            pass
-        # Update immediately to show locked paused state
-        self._update_timer_button()
-
-    def _on_unlock_detected(self):
-        """Handle transition to unlocked state."""
-        # If we auto-paused due to lock, change button to Resume? state (handled by _update_timer_button)
-        if self._timer_paused and self._paused_due_to_lock:
-            # Show resume prompt (style changes automatically because _was_locked becomes False before call completes)
-            self._update_timer_button()
-        # Bring window to front if requested
-        if self._bring_to_front_on_unlock:
-            self._bring_to_front_on_unlock = False
-            self._schedule_focus_attempts()
-        # Restore normal polling interval
-        try:
-            if self.lock_check_timer.interval() != 3000:
-                self.lock_check_timer.setInterval(3000)
-        except Exception:
-            pass
-
-    def _schedule_focus_attempts(self):
-        """Attempt to focus/raise the window multiple times after unlock.
-
-        Some Windows environments or other foreground restrictions may block the
-        first attempt; we try a few spaced attempts to improve reliability.
-        """
-        # Immediate attempt
-        self.bring_to_front()
-        # Additional deferred attempts
-        delays = [150, 350, 700]
-        for d in delays:
-            QtCore.QTimer.singleShot(d, self.bring_to_front)
     
     def _is_cache_valid(self, issue_key: str) -> bool:
         """Check if cached worklog data for an issue is still valid (within 5 minutes)."""
@@ -742,14 +587,33 @@ class Floater(QtWidgets.QMainWindow):
 
     def _cache_last_logged(self, issue_key: str, last_logged: str):
         self._last_logged_cache.set(f"last_logged:{issue_key}", last_logged, ttl_seconds=self._cache_duration)
+
+    def _tracked_worklog_issue_keys(self) -> List[str]:
+        tracked_issue_keys: List[str] = []
+        seen: set[str] = set()
+
+        def add_issue_key(issue_key: Optional[str]) -> None:
+            normalized_key = str(issue_key or "").strip()
+            if not normalized_key or normalized_key in seen:
+                return
+            seen.add(normalized_key)
+            tracked_issue_keys.append(normalized_key)
+
+        for issue_key in self._current_issues:
+            add_issue_key(issue_key)
+        for row in self.allocation_panel.current_state().rows:
+            add_issue_key(row.issue_key)
+        add_issue_key(self._selected_issue_key)
+        return tracked_issue_keys
     
     def _refresh_worklog_cache(self):
         """Periodic refresh of worklog cache for currently displayed issues."""
-        if not (self.tempo and self.account_id and self._current_issues):
+        tracked_issue_keys = self._tracked_worklog_issue_keys()
+        if not (self.tempo and self.account_id and tracked_issue_keys):
             return
         
-        # Only refresh issues that are currently displayed
-        issues_to_refresh = [key for key in self._current_issues if not self._is_cache_valid(key)]
+        # Refresh visible grid issues, allocation rows, and the selected issue if their cache is stale.
+        issues_to_refresh = [key for key in tracked_issue_keys if not self._is_cache_valid(key)]
         
         # Limit the number of issues to refresh at once to prevent API spam
         max_refresh = 5
@@ -1090,7 +954,7 @@ class Floater(QtWidgets.QMainWindow):
         if not summary:
             summary = (self.issue_browser.known_issues_by_key.get(issue_key, {}).get("fields", {}) or {}).get("summary", "")
         self.allocation_panel.add_issue(issue_key, summary)
-        self._sync_allocation_panel_context([issue_key])
+        self._refresh_allocation_panel_data([issue_key], force_refresh=True)
 
     def _restore_allocation_draft(self):
         allocation_draft = self.cfg.allocation_draft if isinstance(self.cfg.allocation_draft, dict) else {"rows": []}
@@ -1238,8 +1102,7 @@ class Floater(QtWidgets.QMainWindow):
         issue_keys = [row.issue_key for row in self.allocation_panel.current_state().rows if row.issue_key]
         if not issue_keys:
             return
-        self._sync_allocation_panel_context(issue_keys)
-        self._start_worklog_fetch(issue_keys, force_refresh=False)
+        self._refresh_allocation_panel_data(issue_keys, force_refresh=False)
 
     def _cache_known_issues(self, issues: List[Dict]):
         self.issue_browser.cache_known_issues(issues)
@@ -1672,6 +1535,8 @@ class Floater(QtWidgets.QMainWindow):
             self._refresh_submission_controls()
             return
         resolved_issue_ids = self.worklog_service.resolve_issue_ids([row.issue_key for row in submittable_rows])
+        selected_date = self.allocation_panel.selected_date()
+        when = dt.datetime.combine(selected_date, dt.datetime.now().time())
         successes = []
         failures = []
         for row in submittable_rows:
@@ -1686,7 +1551,7 @@ class Floater(QtWidgets.QMainWindow):
                     issue_id=issue_id,
                     account_id=self.account_id or "",
                     seconds=seconds,
-                    when=dt.datetime.now(),
+                    when=when,
                     description=row.description,
                 )
                 successes.append((row.issue_key, seconds))
@@ -2171,9 +2036,10 @@ class Floater(QtWidgets.QMainWindow):
         """Fetch daily total time and update window title."""
         debug = debug_enabled()
         try:
+            selected_date = self.allocation_panel.selected_date()
             if debug:
-                debug_log("Fetching daily total for account: %s", self.account_id)
-            daily_total = self.worklog_service.get_daily_total(account_id=self.account_id)
+                debug_log("Fetching daily total for account: %s, date: %s", self.account_id, selected_date)
+            daily_total = self.worklog_service.get_daily_total(account_id=self.account_id, target_date=selected_date)
             self._daily_total_secs = daily_total
             self._daily_total_cache_time = dt.datetime.now().timestamp()
             
@@ -2521,8 +2387,9 @@ class Floater(QtWidgets.QMainWindow):
 
 
 def main():
-   
-    
+    log_path = configure_logging()
+    audit_log("Starting Tempoy application")
+
     app = QtWidgets.QApplication(sys.argv)
     # Note: Using default behavior - app closes when last window is closed
 
@@ -2541,6 +2408,7 @@ def main():
             pass
     
     w = Floater(ConfigManager.load())
+    audit_log("Tempoy UI initialized (log_path=%s)", log_path)
     
     w.show()
         

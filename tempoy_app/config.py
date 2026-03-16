@@ -11,6 +11,29 @@ CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
 OLD_CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".tempo_floater")
 OLD_CONFIG_PATH = os.path.join(OLD_CONFIG_DIR, "config.json")
 DEFAULT_ISSUE_LIST_COLUMN_WIDTHS = [100, 300, 150, 60, 60, 100]
+DEFAULT_COPILOT_API_PORT = 8765
+DEFAULT_COPILOT_API_MODE = "read-only"
+DEFAULT_COPILOT_SESSION_TTL_SECONDS = 3600
+COPILOT_API_MODES = {"read-only", "refine-only", "create-and-refine"}
+
+
+def _normalize_string_list(raw_values: object, *, uppercase: bool = False) -> List[str]:
+    if not isinstance(raw_values, list):
+        return []
+    normalized: List[str] = []
+    seen = set()
+    for raw_value in raw_values:
+        value = str(raw_value or "").strip()
+        if not value:
+            continue
+        if uppercase:
+            value = value.upper()
+        dedupe_key = value.casefold()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        normalized.append(value)
+    return normalized
 
 
 @dataclass
@@ -35,6 +58,15 @@ class AppConfig:
     search_history: List = field(default_factory=list)
     issue_list_column_widths: List[int] = field(default_factory=lambda: DEFAULT_ISSUE_LIST_COLUMN_WIDTHS.copy())
     allocation_draft: Dict = field(default_factory=lambda: {"rows": []})
+    copilot_api_enabled: bool = False
+    copilot_api_port: int = DEFAULT_COPILOT_API_PORT
+    copilot_api_mode: str = DEFAULT_COPILOT_API_MODE
+    copilot_allowed_projects: List[str] = field(default_factory=list)
+    copilot_allowed_issue_types: List[str] = field(default_factory=list)
+    copilot_require_write_confirmation: bool = True
+    copilot_session_token: str | None = None
+    copilot_session_expires_at: int | None = None
+    copilot_session_ttl_seconds: int = DEFAULT_COPILOT_SESSION_TTL_SECONDS
 
     def prune_old_history(self, days_back: int = 3) -> None:
         cutoff_time = time.time() - (days_back * 24 * 60 * 60)
@@ -89,6 +121,35 @@ class AppConfig:
             cfg.allocation_draft = {"rows": []}
         if not isinstance(cfg.allocation_draft.get("rows"), list):
             cfg.allocation_draft = {"rows": []}
+        cfg.copilot_api_enabled = bool(getattr(cfg, "copilot_api_enabled", False))
+        try:
+            cfg.copilot_api_port = int(getattr(cfg, "copilot_api_port", DEFAULT_COPILOT_API_PORT))
+        except (TypeError, ValueError):
+            cfg.copilot_api_port = DEFAULT_COPILOT_API_PORT
+        if cfg.copilot_api_port <= 0 or cfg.copilot_api_port > 65535:
+            cfg.copilot_api_port = DEFAULT_COPILOT_API_PORT
+        raw_mode = str(getattr(cfg, "copilot_api_mode", DEFAULT_COPILOT_API_MODE) or DEFAULT_COPILOT_API_MODE).strip()
+        cfg.copilot_api_mode = raw_mode if raw_mode in COPILOT_API_MODES else DEFAULT_COPILOT_API_MODE
+        cfg.copilot_allowed_projects = _normalize_string_list(getattr(cfg, "copilot_allowed_projects", []), uppercase=True)
+        cfg.copilot_allowed_issue_types = _normalize_string_list(getattr(cfg, "copilot_allowed_issue_types", []))
+        cfg.copilot_require_write_confirmation = bool(getattr(cfg, "copilot_require_write_confirmation", True))
+        raw_session_token = getattr(cfg, "copilot_session_token", None)
+        if raw_session_token is None:
+            cfg.copilot_session_token = None
+        else:
+            session_token = str(raw_session_token).strip()
+            cfg.copilot_session_token = session_token or None
+        raw_session_expires_at = getattr(cfg, "copilot_session_expires_at", None)
+        try:
+            cfg.copilot_session_expires_at = None if raw_session_expires_at in {None, ""} else max(0, int(raw_session_expires_at))
+        except (TypeError, ValueError):
+            cfg.copilot_session_expires_at = None
+        try:
+            cfg.copilot_session_ttl_seconds = int(getattr(cfg, "copilot_session_ttl_seconds", DEFAULT_COPILOT_SESSION_TTL_SECONDS))
+        except (TypeError, ValueError):
+            cfg.copilot_session_ttl_seconds = DEFAULT_COPILOT_SESSION_TTL_SECONDS
+        if cfg.copilot_session_ttl_seconds <= 0:
+            cfg.copilot_session_ttl_seconds = DEFAULT_COPILOT_SESSION_TTL_SECONDS
         if "daily_time_seconds" not in raw_data:
             try:
                 cfg.daily_time_seconds = max(0, int(legacy_daily_time_minutes or 480) * 60)

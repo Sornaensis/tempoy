@@ -7,7 +7,7 @@ import time
 import unittest
 
 from tempoy_app import config as config_module
-from tempoy_app.config import AppConfig, ConfigManager, DEFAULT_ISSUE_LIST_COLUMN_WIDTHS
+from tempoy_app.config import AppConfig, ConfigManager, DEFAULT_COPILOT_SESSION_TTL_SECONDS, DEFAULT_ISSUE_LIST_COLUMN_WIDTHS
 
 
 class ConfigManagerTests(unittest.TestCase):
@@ -94,6 +94,31 @@ class ConfigManagerTests(unittest.TestCase):
 
         self.assertEqual(cfg.daily_time_seconds, 5400)
         self.assertFalse(hasattr(cfg, "daily_time_minutes"))
+
+    def test_from_dict_normalizes_copilot_api_settings(self) -> None:
+        cfg = AppConfig.from_dict(
+            {
+                "copilot_api_enabled": 1,
+                "copilot_api_port": 70000,
+                "copilot_api_mode": "nope",
+                "copilot_allowed_projects": [" abc ", "ABC", "xyz"],
+                "copilot_allowed_issue_types": [" Task ", "Task", "Bug"],
+                "copilot_require_write_confirmation": 0,
+                "copilot_session_token": "   ",
+                "copilot_session_expires_at": "12",
+                "copilot_session_ttl_seconds": 0,
+            }
+        )
+
+        self.assertTrue(cfg.copilot_api_enabled)
+        self.assertEqual(cfg.copilot_api_port, 8765)
+        self.assertEqual(cfg.copilot_api_mode, "read-only")
+        self.assertEqual(cfg.copilot_allowed_projects, ["ABC", "XYZ"])
+        self.assertEqual(cfg.copilot_allowed_issue_types, ["Task", "Bug"])
+        self.assertFalse(cfg.copilot_require_write_confirmation)
+        self.assertIsNone(cfg.copilot_session_token)
+        self.assertEqual(cfg.copilot_session_expires_at, 12)
+        self.assertEqual(cfg.copilot_session_ttl_seconds, DEFAULT_COPILOT_SESSION_TTL_SECONDS)
 
 
 if __name__ == "__main__":
