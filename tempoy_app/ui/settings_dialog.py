@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from tempoy_app.config import AppConfig, COPILOT_API_MODES, DEFAULT_COPILOT_API_PORT
+import os
+import subprocess
+import sys
+
+from tempoy_app.config import AppConfig, CONFIG_DIR, COPILOT_API_MODES, DEFAULT_COPILOT_API_PORT
 from tempoy_app.formatting import format_duration_hms, parse_duration_hms
 
 APP_NAME = "Tempoy"
@@ -71,16 +75,16 @@ class SettingsDialog(QtWidgets.QDialog):
         form.addRow("Reminder time (local)", self.reminder_time)
         form.addRow(self.always_on_top)
 
-        # --- Copilot API section ---
-        copilot_separator = QtWidgets.QFrame()
-        copilot_separator.setFrameShape(QtWidgets.QFrame.HLine)
-        copilot_separator.setFrameShadow(QtWidgets.QFrame.Sunken)
-        form.addRow(copilot_separator)
+        # --- MCP API section ---
+        mcp_separator = QtWidgets.QFrame()
+        mcp_separator.setFrameShape(QtWidgets.QFrame.HLine)
+        mcp_separator.setFrameShadow(QtWidgets.QFrame.Sunken)
+        form.addRow(mcp_separator)
 
-        copilot_label = QtWidgets.QLabel("<b>Copilot API</b>")
-        form.addRow(copilot_label)
+        mcp_label = QtWidgets.QLabel("<b>MCP API</b>")
+        form.addRow(mcp_label)
 
-        self.copilot_enabled = QtWidgets.QCheckBox("Enable Copilot API")
+        self.copilot_enabled = QtWidgets.QCheckBox("Enable MCP API")
         self.copilot_enabled.setChecked(self.cfg.copilot_api_enabled)
         self.copilot_enabled.setToolTip(
             "Start a local HTTP API that allows MCP clients and AI agents to interact with Tempoy."
@@ -90,7 +94,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.copilot_port = QtWidgets.QSpinBox()
         self.copilot_port.setRange(1024, 65535)
         self.copilot_port.setValue(self.cfg.copilot_api_port)
-        self.copilot_port.setToolTip(f"TCP port for the Copilot API (default: {DEFAULT_COPILOT_API_PORT}).")
+        self.copilot_port.setToolTip(f"TCP port for the MCP API (default: {DEFAULT_COPILOT_API_PORT}).")
         self.copilot_port.setEnabled(self.cfg.copilot_api_enabled)
         form.addRow("API port", self.copilot_port)
 
@@ -129,6 +133,11 @@ class SettingsDialog(QtWidgets.QDialog):
         help_label.setOpenExternalLinks(True)
         layout.addWidget(help_label)
 
+        open_config_btn = QtWidgets.QPushButton("Open Config Directory")
+        open_config_btn.setToolTip(CONFIG_DIR)
+        open_config_btn.clicked.connect(self._open_config_directory)
+        layout.addWidget(open_config_btn)
+
     @staticmethod
     def _parse_reminder_time(value: str) -> QtCore.QTime:
         raw_value = str(value or "1500").strip()
@@ -150,3 +159,14 @@ class SettingsDialog(QtWidgets.QDialog):
         self.cfg.copilot_api_port = int(self.copilot_port.value())
         self.cfg.copilot_api_mode = str(self.copilot_mode.currentData())
         super().accept()
+
+    @staticmethod
+    def _open_config_directory():
+        path = os.path.realpath(CONFIG_DIR)
+        os.makedirs(path, exist_ok=True)
+        if sys.platform == "win32":
+            os.startfile(path)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", path])
+        else:
+            subprocess.Popen(["xdg-open", path])
