@@ -214,8 +214,8 @@ source "$VENV_DIR/bin/activate"
 pip install --upgrade pip > /dev/null 2>&1
 
 # Install required packages
-pip install "PySide6>=6.7" "requests>=2.32"
-log_success "Dependencies installed (PySide6, requests)"
+pip install "PySide6>=6.7" "requests>=2.32" "mcp>=1.26"
+log_success "Dependencies installed (PySide6, requests, mcp)"
 
 # Step 5: Copy Tempoy application payload
 echo

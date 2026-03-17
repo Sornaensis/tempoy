@@ -114,13 +114,13 @@ if %errorlevel% neq 0 (
 python -m pip install --upgrade pip >nul 2>&1
 
 :: Install required packages
-python -m pip install "PySide6>=6.7" "requests>=2.32"
+python -m pip install "PySide6>=6.7" "requests>=2.32" "mcp>=1.26"
 if %errorlevel% neq 0 (
     echo %COLOR_RED%ERROR: Failed to install dependencies%COLOR_RESET%
     pause
     exit /b 1
 )
-echo %COLOR_GREEN%✓ Dependencies installed (PySide6, requests)%COLOR_RESET%
+echo %COLOR_GREEN%✓ Dependencies installed (PySide6, requests, mcp)%COLOR_RESET%
 
 :: Step 5: Copy Tempoy application payload
 echo.
