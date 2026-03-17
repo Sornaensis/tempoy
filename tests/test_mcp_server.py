@@ -33,6 +33,8 @@ class TempoyMcpServerTests(unittest.TestCase):
         self.assertIn("get_issue_details", tool_names)
         self.assertIn("create_ticket", tool_names)
         self.assertIn("reset_allocation", tool_names)
+        self.assertIn("get_issue_transitions", tool_names)
+        self.assertIn("transition_issue", tool_names)
 
     def test_build_success_result_includes_structured_content(self) -> None:
         result = build_success_result({"ok": True})

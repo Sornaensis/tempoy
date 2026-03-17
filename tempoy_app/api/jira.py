@@ -338,6 +338,32 @@ class JiraClient:
         prefix, _, number = normalized.partition("-")
         return bool(prefix and number.isdigit())
 
+    def get_transitions(self, issue_key: str) -> List[Dict]:
+        normalized_issue_key = str(issue_key or "").strip().upper()
+        if not normalized_issue_key:
+            raise ValueError("Issue key is required")
+        response = self.session.get(
+            f"{self.base_url}/rest/api/3/issue/{normalized_issue_key}/transitions",
+            timeout=30,
+        )
+        response.raise_for_status()
+        data = response.json() or {}
+        return data.get("transitions", []) if isinstance(data.get("transitions"), list) else []
+
+    def transition_issue(self, issue_key: str, transition_id: str) -> None:
+        normalized_issue_key = str(issue_key or "").strip().upper()
+        if not normalized_issue_key:
+            raise ValueError("Issue key is required")
+        normalized_transition_id = str(transition_id or "").strip()
+        if not normalized_transition_id:
+            raise ValueError("Transition ID is required")
+        response = self.session.post(
+            f"{self.base_url}/rest/api/3/issue/{normalized_issue_key}/transitions",
+            json={"transition": {"id": normalized_transition_id}},
+            timeout=30,
+        )
+        response.raise_for_status()
+
     def get_issue_worklogs(self, issue_key: str, account_id: Optional[str] = None) -> List[Dict]:
         collected: List[Dict] = []
         start_at = 0

@@ -207,10 +207,11 @@ class AllocationRowWidget(QtWidgets.QWidget):
         total_logged_text = format_seconds(total_logged_seconds)
         editable_duration = format_duration_hms(duration_seconds)
         self.duration_label.setText(f'<a href="edit">{editable_duration}</a>')
-        self.duration_editor.setText(editable_duration)
-        self.duration_editor.setProperty("durationText", editable_duration)
         self.total_label.setText(f"/ {total_logged_text} total")
-        self.restore_duration_display()
+        if not self.duration_editor.isVisible():
+            self.duration_editor.setText(editable_duration)
+            self.duration_editor.setProperty("durationText", editable_duration)
+            self.restore_duration_display()
         self._building = False
 
 
@@ -368,7 +369,16 @@ class AllocationPanel(QtWidgets.QGroupBox):
         else:
             requested_seconds = max(0, min(int(requested_seconds), effective_total_seconds))
             requested_units = int(round((requested_seconds / effective_total_seconds) * self.service.TOTAL_UNITS))
-        updated_state = self.service.set_row_units(self.current_state(), issue_key, requested_units)
+        # Unlock the target row first so set_row_units can modify it
+        unlocked_rows = []
+        for row in self.current_state().rows:
+            if row.issue_key == issue_key:
+                unlocked_rows.append(replace(row, locked=False))
+            else:
+                unlocked_rows.append(replace(row))
+        unlocked_state = AllocationState(total_units=self.service.TOTAL_UNITS, rows=unlocked_rows)
+        updated_state = self.service.set_row_units(unlocked_state, issue_key, requested_units)
+        # Lock the target row after setting units
         rows = []
         for row in updated_state.rows:
             if row.issue_key == issue_key:

@@ -112,6 +112,27 @@ TOOL_DEFINITIONS: List[McpToolDefinition] = [
         ),
     ),
     McpToolDefinition(
+        "get_issue_transitions",
+        "Get available status transitions for a Jira issue through Tempoy.",
+        _object_schema(
+            properties={"issue_key": {"type": "string", "description": "Jira issue key, such as ABC-123."}},
+            required=["issue_key"],
+        ),
+    ),
+    McpToolDefinition(
+        "transition_issue",
+        "Move a Jira issue to a new status through Tempoy's preview/apply guarded flow.",
+        _object_schema(
+            properties={
+                "issue_key": {"type": "string", "description": "Jira issue key, such as ABC-123."},
+                "transition_name": {"type": "string", "description": "Target status or transition name (case-insensitive match)."},
+                "apply": {"type": "boolean"},
+                "confirm": {"type": "boolean"},
+            },
+            required=["issue_key", "transition_name"],
+        ),
+    ),
+    McpToolDefinition(
         "add_ticket_to_allocation",
         "Add an issue to the Tempoy allocation draft.",
         _object_schema(

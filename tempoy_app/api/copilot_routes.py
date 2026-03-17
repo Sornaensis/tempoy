@@ -308,6 +308,107 @@ class CopilotRoutes:
         )
         return payload
 
+    def get_issue_transitions(self, issue_key: str, *, token: Optional[str]) -> Dict[str, object]:
+        self._policy_service.require_session_token(token)
+        normalized_issue_key = str(issue_key or "").strip().upper()
+        if not normalized_issue_key:
+            raise ValueError("Issue key is required")
+        jira_client = self._jira_client_factory()
+        issue = jira_client.get_issue(normalized_issue_key)
+        project_key = str(((issue.get("fields") or {}).get("project") or {}).get("key") or "").upper()
+        if not self._policy_service.is_project_allowed(project_key):
+            raise CopilotPolicyError("Project is not allowed")
+        raw_transitions = jira_client.get_transitions(normalized_issue_key)
+        current_status = str(((issue.get("fields") or {}).get("status") or {}).get("name") or "")
+        transitions = [
+            {
+                "id": str(t.get("id") or ""),
+                "name": str(t.get("name") or ""),
+                "to_status": str(((t.get("to") or {}).get("name") or "")),
+            }
+            for t in raw_transitions
+            if isinstance(t, dict) and t.get("id")
+        ]
+        self._audit_service.log_event(
+            operation="issues.transitions.get",
+            success=True,
+            category="read",
+            detail={"issue_key": normalized_issue_key, "transition_count": len(transitions)},
+        )
+        return {
+            "issue_key": normalized_issue_key,
+            "current_status": current_status,
+            "transitions": transitions,
+        }
+
+    def transition_issue(self, body: Dict[str, Any], *, token: Optional[str]) -> Dict[str, object]:
+        normalized_issue_key = str(body.get("issue_key") or "").strip().upper()
+        if not normalized_issue_key:
+            raise ValueError("Issue key is required")
+        transition_name = str(body.get("transition_name") or "").strip()
+        if not transition_name:
+            raise ValueError("Transition name is required")
+        apply = self._coerce_bool(body.get("apply"), default=False)
+        confirm = self._coerce_bool(body.get("confirm"), default=False)
+
+        jira_client = self._jira_client_factory()
+        issue = jira_client.get_issue(normalized_issue_key)
+        fields = issue.get("fields") if isinstance(issue.get("fields"), dict) else {}
+        project_key = str((fields.get("project") or {}).get("key") or "").strip().upper()
+        if not self._policy_service.is_project_allowed(project_key):
+            raise CopilotPolicyError("Project is not allowed")
+        issue_type = str((fields.get("issuetype") or {}).get("name") or "").strip()
+        config = self._policy_service.require_refine_access(token, issue_type_name=issue_type or None)
+
+        current_status = str((fields.get("status") or {}).get("name") or "")
+        raw_transitions = jira_client.get_transitions(normalized_issue_key)
+        matched_transition = None
+        for t in raw_transitions:
+            if not isinstance(t, dict):
+                continue
+            t_name = str(t.get("name") or "")
+            to_status = str(((t.get("to") or {}).get("name") or ""))
+            if t_name.casefold() == transition_name.casefold() or to_status.casefold() == transition_name.casefold():
+                matched_transition = t
+                break
+        if matched_transition is None:
+            available = [str(t.get("name") or "") for t in raw_transitions if isinstance(t, dict)]
+            raise ValueError(
+                f"No transition matching '{transition_name}' is available. "
+                f"Available transitions: {', '.join(available) if available else 'none'}"
+            )
+
+        to_status = str(((matched_transition.get("to") or {}).get("name") or ""))
+        preview = {
+            "operation": "transition_issue",
+            "issue_key": normalized_issue_key,
+            "project_key": project_key,
+            "issue_type": issue_type,
+            "current_status": current_status,
+            "transition_name": str(matched_transition.get("name") or ""),
+            "transition_id": str(matched_transition.get("id") or ""),
+            "to_status": to_status,
+            "requires_confirmation": bool(config.copilot_require_write_confirmation),
+        }
+        if not apply or (config.copilot_require_write_confirmation and not confirm):
+            self._audit_service.log_event(
+                operation="issues.transition.preview",
+                success=True,
+                category="write-preview",
+                detail={"issue_key": normalized_issue_key, "to_status": to_status},
+            )
+            return {"applied": False, "preview": preview}
+
+        jira_client.transition_issue(normalized_issue_key, str(matched_transition.get("id") or ""))
+        updated_issue = JiraAnalysisService(jira_base_url=jira_client.base_url).normalize_issue(jira_client.get_issue(normalized_issue_key))
+        self._audit_service.log_event(
+            operation="issues.transition.apply",
+            success=True,
+            category="write",
+            detail={"issue_key": normalized_issue_key, "from_status": current_status, "to_status": to_status},
+        )
+        return {"applied": True, "preview": preview, "issue": updated_issue}
+
     def create_issue(self, body: Dict[str, Any], *, token: Optional[str]) -> Dict[str, object]:
         issue_type = str(body.get("issue_type") or "Task").strip() or "Task"
         if issue_type.casefold() != "task":

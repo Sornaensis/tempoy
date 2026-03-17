@@ -27,6 +27,8 @@ class _FakeJiraClient:
         self.get_edit_schema_calls = []
         self.update_issue_calls = []
         self.search_children_calls = []
+        self.get_transitions_calls = []
+        self.transition_issue_calls = []
 
     def search_issues(self, **kwargs):
         self.search_calls.append(dict(kwargs))
@@ -247,6 +249,18 @@ class _FakeJiraClient:
     def update_issue(self, issue_key, fields):
         self.update_issue_calls.append({"issue_key": issue_key, "fields": fields})
         return {}
+
+    def get_transitions(self, issue_key):
+        self.get_transitions_calls.append({"issue_key": issue_key})
+        return [
+            {"id": "21", "name": "Start Progress", "to": {"name": "In Progress", "id": "3"}},
+            {"id": "31", "name": "Move to Backlog", "to": {"name": "Kanban.backlog", "id": "10"}},
+            {"id": "41", "name": "Done", "to": {"name": "Done", "id": "5"}},
+        ]
+
+    def transition_issue(self, issue_key, transition_id):
+        self.transition_issue_calls.append({"issue_key": issue_key, "transition_id": transition_id})
+        return None
 
 
 class _ConfigStore:
@@ -960,6 +974,95 @@ class TempoyApiServerTests(unittest.TestCase):
         self.assertEqual(reset_status, 200)
         self.assertEqual(reset_payload["rows"][0]["allocation_units"], 10000)
         self.assertEqual(self.store.config.allocation_draft["rows"][0]["issue_key"], "ABC-1")
+
+    def test_get_issue_transitions_requires_session(self) -> None:
+        with self.assertRaises(urllib.error.HTTPError) as exc_info:
+            self._request("GET", "/issues/ABC-1/transitions")
+        self.assertEqual(exc_info.exception.code, 401)
+
+    def test_get_issue_transitions_returns_available_transitions(self) -> None:
+        self.store.config.copilot_api_mode = "read-only"
+        _, session_payload = self._request("POST", "/session/start", payload={"client_name": "tests"})
+
+        status, payload = self._request(
+            "GET",
+            "/issues/ABC-1/transitions",
+            headers={"Authorization": f"Bearer {session_payload['token']}"},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["issue_key"], "ABC-1")
+        self.assertEqual(payload["current_status"], "In Progress")
+        self.assertIsInstance(payload["transitions"], list)
+        self.assertTrue(len(payload["transitions"]) >= 1)
+        names = [t["name"] for t in payload["transitions"]]
+        self.assertIn("Move to Backlog", names)
+        self.assertIn("Done", names)
+
+    def test_transition_issue_returns_preview_by_default(self) -> None:
+        self.store.config.copilot_api_mode = "refine-only"
+        _, session_payload = self._request("POST", "/session/start", payload={"client_name": "tests"})
+
+        status, payload = self._request(
+            "POST",
+            "/issues/transition",
+            payload={"issue_key": "ABC-1", "transition_name": "Kanban.backlog"},
+            headers={"Authorization": f"Bearer {session_payload['token']}"},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertFalse(payload["applied"])
+        self.assertEqual(payload["preview"]["issue_key"], "ABC-1")
+        self.assertEqual(payload["preview"]["current_status"], "In Progress")
+        self.assertEqual(payload["preview"]["to_status"], "Kanban.backlog")
+        self.assertEqual(payload["preview"]["transition_id"], "31")
+        self.assertEqual(len(self.fake_jira_client.transition_issue_calls), 0)
+
+    def test_transition_issue_applies_when_confirmed(self) -> None:
+        self.store.config.copilot_api_mode = "refine-only"
+        self.store.config.copilot_require_write_confirmation = True
+        _, session_payload = self._request("POST", "/session/start", payload={"client_name": "tests"})
+
+        status, payload = self._request(
+            "POST",
+            "/issues/transition",
+            payload={"issue_key": "ABC-1", "transition_name": "Done", "apply": True, "confirm": True},
+            headers={"Authorization": f"Bearer {session_payload['token']}"},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["applied"])
+        self.assertEqual(payload["preview"]["to_status"], "Done")
+        self.assertIn("issue", payload)
+        self.assertEqual(len(self.fake_jira_client.transition_issue_calls), 1)
+        self.assertEqual(self.fake_jira_client.transition_issue_calls[0]["issue_key"], "ABC-1")
+        self.assertEqual(self.fake_jira_client.transition_issue_calls[0]["transition_id"], "41")
+
+    def test_transition_issue_rejects_invalid_transition_name(self) -> None:
+        self.store.config.copilot_api_mode = "refine-only"
+        _, session_payload = self._request("POST", "/session/start", payload={"client_name": "tests"})
+
+        with self.assertRaises(urllib.error.HTTPError) as exc_info:
+            self._request(
+                "POST",
+                "/issues/transition",
+                payload={"issue_key": "ABC-1", "transition_name": "Nonexistent Status"},
+                headers={"Authorization": f"Bearer {session_payload['token']}"},
+            )
+        self.assertEqual(exc_info.exception.code, 400)
+
+    def test_transition_issue_requires_refine_access(self) -> None:
+        self.store.config.copilot_api_mode = "read-only"
+        _, session_payload = self._request("POST", "/session/start", payload={"client_name": "tests"})
+
+        with self.assertRaises(urllib.error.HTTPError) as exc_info:
+            self._request(
+                "POST",
+                "/issues/transition",
+                payload={"issue_key": "ABC-1", "transition_name": "Done"},
+                headers={"Authorization": f"Bearer {session_payload['token']}"},
+            )
+        self.assertEqual(exc_info.exception.code, 403)
 
 
 if __name__ == "__main__":

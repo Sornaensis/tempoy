@@ -61,6 +61,7 @@ TEMPOY_API_BASE_URL=http://127.0.0.1:9000 python -m tempoy_app.mcp_server
 | `get_project_create_schema` | Get normalized create metadata for a project |
 | `search_tickets` | Search Jira tickets through Tempoy's safe search surface |
 | `get_issue_details` | Get normalized details for a Jira issue |
+| `get_issue_transitions` | Get available status transitions for an issue |
 | `analyze_hierarchy` | Get hierarchy and related-work view for issues |
 | `get_allocation_draft` | Get the current allocation draft and daily context |
 
@@ -70,6 +71,7 @@ TEMPOY_API_BASE_URL=http://127.0.0.1:9000 python -m tempoy_app.mcp_server
 |------|-------------|
 | `create_ticket` | Create a Task through Tempoy's preview/apply flow |
 | `update_issue_fields` | Update issue fields through Tempoy's constrained update flow |
+| `transition_issue` | Move an issue to a new status through Tempoy's preview/apply flow |
 | `add_ticket_to_allocation` | Add an issue to the allocation draft |
 | `remove_ticket_from_allocation` | Remove an issue from the allocation draft |
 | `set_allocation_units` | Set allocation units for a draft row |
