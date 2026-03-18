@@ -119,6 +119,17 @@ class AllocationServiceTests(unittest.TestCase):
         self.assertEqual(allocations, {"A": 1800, "B": 5400})
         self.assertEqual(sum(allocations.values()), 7200)
 
+    def test_allocations_to_total_seconds_single_row_zero_units(self) -> None:
+        state = AllocationState(
+            total_units=10_000,
+            rows=[AllocationRow(issue_key="A", allocation_units=0)],
+        )
+
+        # Row with 0 units gets at most 1 second from rounding (no crash)
+        allocations = self.service.allocations_to_total_seconds(state, total_seconds=28800)
+
+        self.assertEqual(allocations, {"A": 1})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -111,7 +111,7 @@ class AllocationService:
             assigned_total += seconds
         leftover = total_seconds - assigned_total
         provisional.sort(key=lambda item: (-item[2], item[0]))
-        for offset in range(leftover):
+        for offset in range(min(leftover, len(provisional))):
             issue_key, seconds, remainder = provisional[offset]
             provisional[offset] = (issue_key, seconds + 1, remainder)
         for issue_key, seconds, _ in provisional:
