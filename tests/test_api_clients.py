@@ -253,6 +253,44 @@ class ApiClientTests(unittest.TestCase):
         self.assertIn("/issue/ABC-1/editmeta", fake_session.get_calls[0]["url"])
         self.assertIn("summary", schema["fields"])
 
+    def test_tempo_get_user_issue_time_uses_issue_endpoint(self) -> None:
+        today_str = dt.date.today().strftime("%Y-%m-%d")
+        responses = [
+            _FakeResponse(
+                {
+                    "results": [
+                        {"author": {"accountId": "acct-1"}, "timeSpentSeconds": 3600, "startDate": "2025-01-01"},
+                        {"author": {"accountId": "acct-2"}, "timeSpentSeconds": 900, "startDate": today_str},
+                        {"author": {"accountId": "acct-1"}, "timeSpentSeconds": 1800, "startDate": today_str},
+                    ],
+                }
+            ),
+        ]
+        fake_session = _FakeSession(responses)
+        with patch("tempoy_app.api.tempo.requests.Session", return_value=fake_session):
+            client = TempoClient("tempo-token")
+
+        today_secs, total_secs = client.get_user_issue_time(
+            issue_key="ABC-1", issue_id="12345", account_id="acct-1",
+        )
+
+        self.assertEqual(total_secs, 5400)  # 3600 + 1800 (acct-1 only)
+        self.assertEqual(today_secs, 1800)  # only today's entry for acct-1
+        self.assertEqual(len(fake_session.get_calls), 1)
+        self.assertIn("/worklogs/issue/12345", fake_session.get_calls[0]["url"])
+
+    def test_tempo_get_user_issue_time_returns_zero_without_issue_id(self) -> None:
+        fake_session = _FakeSession([])
+        with patch("tempoy_app.api.tempo.requests.Session", return_value=fake_session):
+            client = TempoClient("tempo-token")
+
+        today_secs, total_secs = client.get_user_issue_time(
+            issue_key="ABC-1", issue_id=None, account_id="acct-1",
+        )
+
+        self.assertEqual((today_secs, total_secs), (0, 0))
+        self.assertEqual(len(fake_session.get_calls), 0)
+
     def test_jira_update_issue_puts_fields_payload(self) -> None:
         fake_session = _FakeSession([_FakeResponse({}, status_code=204)])
         with patch("tempoy_app.api.jira.requests.Session", return_value=fake_session):

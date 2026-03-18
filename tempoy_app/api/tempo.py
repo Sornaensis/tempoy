@@ -73,50 +73,35 @@ class TempoClient:
         issue_key: str,
         issue_id: Optional[str] = None,
         account_id: str,
-        days_back: int = 365 * 5,
     ) -> Tuple[int, int]:
+        if not issue_id:
+            debug_log("No issue_id for {}, cannot query Tempo issue endpoint", issue_key)
+            return 0, 0
         today = dt.date.today()
-        from_date = today - dt.timedelta(days=days_back)
-        params = {
-            "worker": account_id,
-            "from": from_date.strftime("%Y-%m-%d"),
-            "to": today.strftime("%Y-%m-%d"),
-            "limit": 100,
-        }
-        if issue_id:
-            params["issueId"] = int(issue_id)
         total = 0
         today_total = 0
-        debug_log("Querying Tempo API with params: {}", params)
+        debug_log("Querying Tempo worklogs for issue {} (ID: {})", issue_key, issue_id)
         offset = 0
-        max_pages = 20
-        page_count = 0
-        while page_count < max_pages:
-            current_params = dict(params)
-            current_params["offset"] = offset
-            debug_log("Page {}, offset {}", page_count + 1, offset)
+        limit = 100
+        while True:
             try:
-                response = self.session.get(f"{self.BASE}/worklogs", params=current_params, timeout=30)
+                response = self.session.get(
+                    f"{self.BASE}/worklogs/issue/{issue_id}",
+                    params={"offset": offset, "limit": limit},
+                    timeout=30,
+                )
                 response.raise_for_status()
                 data = response.json() or {}
                 batch = data.get("results", [])
                 if not batch:
-                    debug_log("No more worklogs, ending pagination")
                     break
-                debug_log("Got {} worklogs", len(batch))
+                debug_log("Got {} worklogs (offset {})", len(batch), offset)
             except Exception as error:
                 debug_log("API request failed: {}", error)
                 break
             for worklog in batch:
-                if issue_id:
-                    worklog_issue = worklog.get("issue", {})
-                    worklog_issue_id = worklog_issue.get("id")
-                    if str(worklog_issue_id) != str(issue_id):
-                        continue
                 worklog_author = worklog.get("author", {})
-                worklog_account_id = worklog_author.get("accountId")
-                if worklog_account_id != account_id:
-                    debug_log("Skipping worklog - author {} != {}", worklog_account_id, account_id)
+                if worklog_author.get("accountId") != account_id:
                     continue
                 seconds = int(worklog.get("timeSpentSeconds") or 0)
                 total += seconds
@@ -127,12 +112,9 @@ class TempoClient:
                             today_total += seconds
                     except Exception:
                         pass
-                debug_log("Processed worklog: {}s on {}", seconds, start_date)
-            if len(batch) < params["limit"]:
-                debug_log("Received {} < {}, ending pagination", len(batch), params["limit"])
+            if len(batch) < limit:
                 break
             offset += len(batch)
-            page_count += 1
         debug_log("Final result for {} (ID: {}): today={}s, total={}s", issue_key, issue_id, today_total, total)
         return today_total, total
 
