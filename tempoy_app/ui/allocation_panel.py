@@ -233,8 +233,13 @@ class AllocationPanel(QtWidgets.QGroupBox):
         self._row_widgets: dict[str, AllocationRowWidget] = {}
 
         self.day_selector = QtWidgets.QComboBox()
+        self._day_selector_date = dt.date.today()
         self._populate_day_selector()
         self.day_selector.currentIndexChanged.connect(self._on_day_selector_changed)
+
+        self._day_refresh_timer = QtCore.QTimer(self)
+        self._day_refresh_timer.timeout.connect(self._check_day_rollover)
+        self._day_refresh_timer.start(60_000)  # check every minute
 
         self.info_label = QtWidgets.QLabel()
         self.empty_state_label = QtWidgets.QLabel("No tickets in today's allocation yet. Select an issue above, then add it here.")
@@ -304,6 +309,14 @@ class AllocationPanel(QtWidgets.QGroupBox):
             self.day_selector.addItem(label, day)
         self.day_selector.setCurrentIndex(0)
         self.day_selector.blockSignals(False)
+
+    def _check_day_rollover(self):
+        """Repopulate the day dropdown if the calendar date has changed."""
+        today = dt.date.today()
+        if today != self._day_selector_date:
+            self._day_selector_date = today
+            self._populate_day_selector()
+            self.dayChanged.emit()
 
     def _on_day_selector_changed(self, _index: int):
         self._refresh_ui()
