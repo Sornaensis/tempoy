@@ -166,6 +166,31 @@ TOOL_DEFINITIONS: List[McpToolDefinition] = [
     ),
     McpToolDefinition("equalize_allocation", "Equalize unlocked rows in the Tempoy allocation draft.", _object_schema()),
     McpToolDefinition("reset_allocation", "Reset the Tempoy allocation draft using Tempoy's reset semantics.", _object_schema()),
+    McpToolDefinition(
+        "discover_custom_fields",
+        "List the custom fields configured for update through the MCP API, "
+        "including their types and validation constraints.",
+        _object_schema(),
+    ),
+    McpToolDefinition(
+        "update_custom_fields",
+        "Update one or more configured custom fields on a Jira issue. "
+        "Use discover_custom_fields first to learn available fields and their constraints.",
+        _object_schema(
+            properties={
+                "issue_key": {"type": "string", "description": "Jira issue key, such as ABC-123."},
+                "fields": {
+                    "type": "object",
+                    "description": "Map of custom field name to value. "
+                                   "Field names must match configured names from discover_custom_fields.",
+                    "additionalProperties": True,
+                },
+                "apply": {"type": "boolean"},
+                "confirm": {"type": "boolean"},
+            },
+            required=["issue_key", "fields"],
+        ),
+    ),
 ]
 
 

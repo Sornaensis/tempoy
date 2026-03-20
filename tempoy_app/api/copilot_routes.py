@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
+from tempoy_app.config import CustomFieldsConfig
 from tempoy_app.services.copilot_audit_service import CopilotAuditService
 from tempoy_app.services.copilot_allocation_service import CopilotAllocationService
 from tempoy_app.services.copilot_policy_service import CopilotPolicyError, CopilotPolicyService
+from tempoy_app.services.custom_field_schema import CustomFieldSchemaService
 from tempoy_app.services.jira_analysis_service import JiraAnalysisService
 from tempoy_app.services.jira_schema_service import JiraSchemaService
 
@@ -779,3 +781,101 @@ class CopilotRoutes:
         if not content:
             content = [{"type": "paragraph", "content": []}]
         return {"type": "doc", "version": 1, "content": content}
+
+    def discover_custom_fields(self, *, token: Optional[str]) -> Dict[str, object]:
+        self._policy_service.require_session_token(token)
+        raw_fields = CustomFieldsConfig.load()
+        definitions = CustomFieldSchemaService.load_definitions(raw_fields)
+        payload: List[Dict[str, object]] = [
+            {
+                "name": d.name,
+                "field_id": d.field_id,
+                "type": d.type,
+                "constraints": d.constraints_dict(),
+            }
+            for d in definitions
+        ]
+        self._audit_service.log_event(
+            operation="custom-fields.discover",
+            success=True,
+            category="read",
+            detail={"field_count": len(payload)},
+        )
+        return {"custom_fields": payload}
+
+    def update_custom_fields(self, body: Dict[str, Any], *, token: Optional[str]) -> Dict[str, object]:
+        normalized_issue_key = str(body.get("issue_key") or "").strip().upper()
+        if not normalized_issue_key:
+            raise ValueError("Issue key is required")
+        fields_input = body.get("fields")
+        if not isinstance(fields_input, dict) or not fields_input:
+            raise ValueError("Fields object is required and must be non-empty")
+        apply = self._coerce_bool(body.get("apply"), default=False)
+        confirm = self._coerce_bool(body.get("confirm"), default=False)
+
+        jira_client = self._jira_client_factory()
+        issue = jira_client.get_issue(normalized_issue_key)
+        current_fields = issue.get("fields") if isinstance(issue.get("fields"), dict) else {}
+        project_key = str((current_fields.get("project") or {}).get("key") or "").strip().upper()
+        if not self._policy_service.is_project_allowed(project_key):
+            raise CopilotPolicyError("Project is not allowed")
+        issue_type = str((current_fields.get("issuetype") or {}).get("name") or "").strip()
+        config = self._policy_service.require_refine_access(token, issue_type_name=issue_type or None)
+
+        raw_custom_fields = CustomFieldsConfig.load()
+        definitions = CustomFieldSchemaService.load_definitions(raw_custom_fields)
+        defs_by_name = {d.name.casefold(): d for d in definitions}
+
+        jira_fields: Dict[str, Any] = {}
+        changes: Dict[str, Dict[str, object]] = {}
+        for field_name, field_value in fields_input.items():
+            name_key = str(field_name).strip().casefold()
+            definition = defs_by_name.get(name_key)
+            if definition is None:
+                raise ValueError(
+                    f"Unknown custom field '{field_name}'. "
+                    f"Configured fields: {', '.join(d.name for d in definitions) or 'none'}"
+                )
+            validated = CustomFieldSchemaService.validate_value(definition, field_value)
+            payload = CustomFieldSchemaService.build_jira_field_payload(definition, validated)
+            jira_fields.update(payload)
+
+            current_value = current_fields.get(definition.field_id)
+            if definition.type == "duration":
+                tt = current_fields.get("timetracking") or {}
+                current_value = tt.get("originalEstimate") if isinstance(tt, dict) else None
+            elif definition.type == "option":
+                current_value = (current_value or {}).get("value") if isinstance(current_value, dict) else current_value
+            elif definition.type == "multi_option":
+                if isinstance(current_value, list):
+                    current_value = [item.get("value") if isinstance(item, dict) else item for item in current_value]
+            changes[definition.name] = {"from": current_value, "to": validated}
+
+        preview: Dict[str, object] = {
+            "operation": "update_custom_fields",
+            "issue_key": normalized_issue_key,
+            "project_key": project_key,
+            "issue_type": issue_type,
+            "fields": changes,
+            "requires_confirmation": bool(config.copilot_require_write_confirmation),
+        }
+        if not apply or (config.copilot_require_write_confirmation and not confirm):
+            self._audit_service.log_event(
+                operation="custom-fields.update.preview",
+                success=True,
+                category="write-preview",
+                detail={"issue_key": normalized_issue_key, "field_count": len(jira_fields)},
+            )
+            return {"applied": False, "preview": preview}
+
+        jira_client.update_issue(normalized_issue_key, jira_fields)
+        updated_issue = JiraAnalysisService(jira_base_url=jira_client.base_url).normalize_issue(
+            jira_client.get_issue(normalized_issue_key)
+        )
+        self._audit_service.log_event(
+            operation="custom-fields.update.apply",
+            success=True,
+            category="write",
+            detail={"issue_key": normalized_issue_key, "project_key": project_key, "field_count": len(jira_fields)},
+        )
+        return {"applied": True, "preview": preview, "issue": updated_issue}

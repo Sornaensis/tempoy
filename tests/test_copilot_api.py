@@ -4,6 +4,7 @@ import json
 import tempfile
 import time
 import unittest
+import unittest.mock
 import urllib.error
 import urllib.request
 
@@ -1063,6 +1064,156 @@ class TempoyApiServerTests(unittest.TestCase):
                 headers={"Authorization": f"Bearer {session_payload['token']}"},
             )
         self.assertEqual(exc_info.exception.code, 403)
+
+    def test_discover_custom_fields_returns_configured_schemas(self) -> None:
+        custom_fields_data = [
+            {"name": "Story Points", "field_id": "customfield_10001", "type": "number", "min": 0, "max": 100},
+            {"name": "Team", "field_id": "customfield_10002", "type": "option", "allowed_values": ["Alpha", "Beta"]},
+        ]
+        _, session_payload = self._request("POST", "/session/start", payload={"client_name": "tests"})
+
+        with unittest.mock.patch("tempoy_app.api.copilot_routes.CustomFieldsConfig.load", return_value=custom_fields_data):
+            status, payload = self._request(
+                "GET",
+                "/custom-fields/schema",
+                headers={"Authorization": f"Bearer {session_payload['token']}"},
+            )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(len(payload["custom_fields"]), 2)
+        self.assertEqual(payload["custom_fields"][0]["name"], "Story Points")
+        self.assertEqual(payload["custom_fields"][0]["type"], "number")
+        self.assertEqual(payload["custom_fields"][0]["constraints"]["min"], 0)
+        self.assertEqual(payload["custom_fields"][0]["constraints"]["max"], 100)
+        self.assertEqual(payload["custom_fields"][1]["name"], "Team")
+        self.assertEqual(payload["custom_fields"][1]["constraints"]["allowed_values"], ["Alpha", "Beta"])
+
+    def test_discover_custom_fields_returns_empty_when_none_configured(self) -> None:
+        _, session_payload = self._request("POST", "/session/start", payload={"client_name": "tests"})
+
+        with unittest.mock.patch("tempoy_app.api.copilot_routes.CustomFieldsConfig.load", return_value=[]):
+            status, payload = self._request(
+                "GET",
+                "/custom-fields/schema",
+                headers={"Authorization": f"Bearer {session_payload['token']}"},
+            )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["custom_fields"], [])
+
+    def test_discover_custom_fields_requires_session(self) -> None:
+        with self.assertRaises(urllib.error.HTTPError) as exc_info:
+            self._request("GET", "/custom-fields/schema")
+        self.assertEqual(exc_info.exception.code, 401)
+
+    def test_update_custom_fields_returns_preview_by_default(self) -> None:
+        self.store.config.copilot_api_mode = "refine-only"
+        custom_fields_data = [
+            {"name": "Story Points", "field_id": "customfield_10001", "type": "number", "min": 0, "max": 100},
+        ]
+        _, session_payload = self._request("POST", "/session/start", payload={"client_name": "tests"})
+
+        with unittest.mock.patch("tempoy_app.api.copilot_routes.CustomFieldsConfig.load", return_value=custom_fields_data):
+            status, payload = self._request(
+                "POST",
+                "/issues/update-custom-fields",
+                payload={"issue_key": "ABC-1", "fields": {"Story Points": 5}},
+                headers={"Authorization": f"Bearer {session_payload['token']}"},
+            )
+
+        self.assertEqual(status, 200)
+        self.assertFalse(payload["applied"])
+        self.assertEqual(payload["preview"]["issue_key"], "ABC-1")
+        self.assertEqual(payload["preview"]["fields"]["Story Points"]["to"], 5)
+        self.assertEqual(len(self.fake_jira_client.update_issue_calls), 0)
+
+    def test_update_custom_fields_applies_when_confirmed(self) -> None:
+        self.store.config.copilot_api_mode = "refine-only"
+        custom_fields_data = [
+            {"name": "Story Points", "field_id": "customfield_10001", "type": "number", "min": 0, "max": 100},
+        ]
+        _, session_payload = self._request("POST", "/session/start", payload={"client_name": "tests"})
+
+        with unittest.mock.patch("tempoy_app.api.copilot_routes.CustomFieldsConfig.load", return_value=custom_fields_data):
+            status, payload = self._request(
+                "POST",
+                "/issues/update-custom-fields",
+                payload={"issue_key": "ABC-1", "fields": {"Story Points": 8}, "apply": True, "confirm": True},
+                headers={"Authorization": f"Bearer {session_payload['token']}"},
+            )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["applied"])
+        self.assertEqual(payload["issue"]["key"], "ABC-1")
+        self.assertEqual(self.fake_jira_client.update_issue_calls[0]["issue_key"], "ABC-1")
+        self.assertEqual(self.fake_jira_client.update_issue_calls[0]["fields"]["customfield_10001"], 8)
+
+    def test_update_custom_fields_rejects_unknown_field_name(self) -> None:
+        self.store.config.copilot_api_mode = "refine-only"
+        custom_fields_data = [
+            {"name": "Story Points", "field_id": "customfield_10001", "type": "number"},
+        ]
+        _, session_payload = self._request("POST", "/session/start", payload={"client_name": "tests"})
+
+        with unittest.mock.patch("tempoy_app.api.copilot_routes.CustomFieldsConfig.load", return_value=custom_fields_data):
+            with self.assertRaises(urllib.error.HTTPError) as exc_info:
+                self._request(
+                    "POST",
+                    "/issues/update-custom-fields",
+                    payload={"issue_key": "ABC-1", "fields": {"Nonexistent Field": "value"}},
+                    headers={"Authorization": f"Bearer {session_payload['token']}"},
+                )
+        self.assertEqual(exc_info.exception.code, 400)
+
+    def test_update_custom_fields_rejects_invalid_value(self) -> None:
+        self.store.config.copilot_api_mode = "refine-only"
+        custom_fields_data = [
+            {"name": "Story Points", "field_id": "customfield_10001", "type": "number", "min": 0, "max": 100},
+        ]
+        _, session_payload = self._request("POST", "/session/start", payload={"client_name": "tests"})
+
+        with unittest.mock.patch("tempoy_app.api.copilot_routes.CustomFieldsConfig.load", return_value=custom_fields_data):
+            with self.assertRaises(urllib.error.HTTPError) as exc_info:
+                self._request(
+                    "POST",
+                    "/issues/update-custom-fields",
+                    payload={"issue_key": "ABC-1", "fields": {"Story Points": 200}},
+                    headers={"Authorization": f"Bearer {session_payload['token']}"},
+                )
+        self.assertEqual(exc_info.exception.code, 400)
+
+    def test_update_custom_fields_requires_refine_access(self) -> None:
+        self.store.config.copilot_api_mode = "read-only"
+        custom_fields_data = [
+            {"name": "Story Points", "field_id": "customfield_10001", "type": "number"},
+        ]
+        _, session_payload = self._request("POST", "/session/start", payload={"client_name": "tests"})
+
+        with unittest.mock.patch("tempoy_app.api.copilot_routes.CustomFieldsConfig.load", return_value=custom_fields_data):
+            with self.assertRaises(urllib.error.HTTPError) as exc_info:
+                self._request(
+                    "POST",
+                    "/issues/update-custom-fields",
+                    payload={"issue_key": "ABC-1", "fields": {"Story Points": 5}},
+                    headers={"Authorization": f"Bearer {session_payload['token']}"},
+                )
+        self.assertEqual(exc_info.exception.code, 403)
+
+    def test_capabilities_includes_custom_fields_when_configured(self) -> None:
+        custom_fields_data = [
+            {"name": "Story Points", "field_id": "customfield_10001", "type": "number"},
+        ]
+        with unittest.mock.patch("tempoy_app.services.copilot_policy_service.CustomFieldsConfig.load", return_value=custom_fields_data):
+            _, capabilities = self._request("GET", "/capabilities")
+
+        self.assertTrue(capabilities["endpoints"]["custom_fields_read"])
+
+    def test_capabilities_excludes_custom_fields_when_none_configured(self) -> None:
+        with unittest.mock.patch("tempoy_app.services.copilot_policy_service.CustomFieldsConfig.load", return_value=[]):
+            _, capabilities = self._request("GET", "/capabilities")
+
+        self.assertFalse(capabilities["endpoints"]["custom_fields_read"])
+        self.assertFalse(capabilities["endpoints"]["custom_fields_write"])
 
 
 if __name__ == "__main__":

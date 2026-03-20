@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_SEARCH_FIELDS = [
@@ -80,6 +83,113 @@ class JiraClient:
         except Exception:
             pass
         return None
+
+    def get_all_fields(self) -> List[Dict]:
+        response = self.session.get(
+            f"{self.base_url}/rest/api/3/field",
+            timeout=30,
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data if isinstance(data, list) else []
+
+    def search_fields(self, query: str = "", field_type: str = "custom") -> List[Dict]:
+        collected: List[Dict] = []
+        start_at = 0
+        page_size = 50
+        while True:
+            params: Dict[str, object] = {"startAt": start_at, "maxResults": page_size}
+            if query:
+                params["query"] = query
+            if field_type:
+                params["type"] = field_type
+            response = self.session.get(
+                f"{self.base_url}/rest/api/3/field/search",
+                params=params,
+                timeout=30,
+            )
+            response.raise_for_status()
+            data = response.json() or {}
+            values = data.get("values")
+            if not isinstance(values, list) or not values:
+                break
+            collected.extend(values)
+            total = int(data.get("total", 0))
+            start_at += len(values)
+            if start_at >= total:
+                break
+        return collected
+
+    def get_field_options(self, field_id: str, *, max_options: int = 200) -> List[str]:
+        """Fetch the allowed option values for a custom select field.
+
+        Uses the issue create metadata (which works for regular users)
+        to discover the allowedValues for the field.  Returns a list of
+        option value strings, or an empty list if the field has no
+        discoverable options.
+        """
+        normalized = str(field_id or "").strip()
+        if not normalized:
+            return []
+
+        # Get a project to pull create metadata from
+        try:
+            projects = self.get_projects(max_results=1)
+        except Exception as exc:
+            logger.warning("get_field_options(%s): failed to fetch projects: %s", normalized, exc)
+            return []
+        if not projects:
+            logger.info("get_field_options(%s): no projects found", normalized)
+            return []
+
+        project_key = str(projects[0].get("key") or "").strip()
+        if not project_key:
+            return []
+
+        logger.info("get_field_options(%s): fetching create schema for project %s", normalized, project_key)
+
+        # Get create schema — iterate issue types until we find the field
+        try:
+            schemas = self.get_create_schema(project_key)
+        except Exception as exc:
+            logger.warning("get_field_options(%s): failed to fetch create schema: %s", normalized, exc)
+            return []
+
+        logger.info("get_field_options(%s): got %d issue type schemas", normalized, len(schemas))
+
+        for schema in schemas:
+            fields = schema.get("fields")
+            if not isinstance(fields, dict):
+                continue
+            field_meta = fields.get(normalized)
+            if not field_meta:
+                continue
+            allowed = field_meta.get("allowedValues")
+            if not isinstance(allowed, list):
+                logger.info(
+                    "get_field_options(%s): field found in issue type %s but no allowedValues",
+                    normalized, schema.get("name", "?"),
+                )
+                continue
+            options: List[str] = []
+            for opt in allowed:
+                if isinstance(opt, dict):
+                    val = str(opt.get("value") or opt.get("name") or "").strip()
+                elif isinstance(opt, str):
+                    val = opt.strip()
+                else:
+                    continue
+                if val:
+                    options.append(val)
+            if options:
+                logger.info(
+                    "get_field_options(%s): found %d allowed values in issue type %s",
+                    normalized, len(options), schema.get("name", "?"),
+                )
+                return options[:max_options]
+
+        logger.info("get_field_options(%s): field not found in any issue type schema", normalized)
+        return []
 
     def get_projects(self, *, max_results: int = 100) -> List[Dict]:
         response = self.session.get(

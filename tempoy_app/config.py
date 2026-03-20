@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Any, Dict, List
+
+logger = logging.getLogger(__name__)
 
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".tempoy")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
+CUSTOM_FIELDS_PATH = os.path.join(CONFIG_DIR, "custom_fields.json")
 OLD_CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".tempo_floater")
 OLD_CONFIG_PATH = os.path.join(OLD_CONFIG_DIR, "config.json")
 DEFAULT_ISSUE_LIST_COLUMN_WIDTHS = [100, 300, 150, 60, 60, 100]
@@ -15,6 +19,48 @@ DEFAULT_COPILOT_API_PORT = 8765
 DEFAULT_COPILOT_API_MODE = "read-only"
 DEFAULT_COPILOT_SESSION_TTL_SECONDS = 3600
 COPILOT_API_MODES = {"read-only", "refine-only", "create-and-refine"}
+SUPPORTED_CUSTOM_FIELD_TYPES = {"string", "number", "option", "multi_option", "duration", "labels"}
+
+
+def _normalize_custom_fields(raw_list: Any) -> List[Dict]:
+    if not isinstance(raw_list, list):
+        return []
+    result: List[Dict] = []
+    for i, entry in enumerate(raw_list):
+        if not isinstance(entry, dict):
+            logger.warning("Custom field entry %d is not a dict, skipping", i)
+            continue
+        name = str(entry.get("name") or "").strip()
+        field_id = str(entry.get("field_id") or "").strip()
+        field_type = str(entry.get("type") or "").strip().lower()
+        if not name or not field_id or field_type not in SUPPORTED_CUSTOM_FIELD_TYPES:
+            logger.warning(
+                "Custom field entry %d dropped (name=%r, field_id=%r, type=%r)",
+                i, name, field_id, field_type,
+            )
+            continue
+        normalized: Dict[str, Any] = {"name": name, "field_id": field_id, "type": field_type}
+        if field_type == "number":
+            if "min" in entry:
+                normalized["min"] = float(entry["min"])
+            if "max" in entry:
+                normalized["max"] = float(entry["max"])
+        elif field_type in ("option", "multi_option"):
+            values = entry.get("allowed_values")
+            if isinstance(values, list) and values:
+                normalized["allowed_values"] = [str(v) for v in values if str(v).strip()]
+        elif field_type == "string":
+            if "max_length" in entry:
+                normalized["max_length"] = max(1, int(entry["max_length"]))
+        elif field_type == "duration":
+            if field_id != "timetracking.originalEstimate":
+                logger.warning(
+                    "Custom field entry %d: duration type only supports field_id "
+                    "'timetracking.originalEstimate', got %r — skipping", i, field_id,
+                )
+                continue
+        result.append(normalized)
+    return result
 
 
 def _normalize_string_list(raw_values: object, *, uppercase: bool = False) -> List[str]:
@@ -218,3 +264,27 @@ class ConfigManager:
         with open(tmp, "w", encoding="utf-8") as file_handle:
             json.dump(cfg.to_dict(), file_handle, indent=2)
         os.replace(tmp, CONFIG_PATH)
+
+
+class CustomFieldsConfig:
+    @staticmethod
+    def load() -> List[Dict]:
+        if not os.path.exists(CUSTOM_FIELDS_PATH):
+            return []
+        try:
+            with open(CUSTOM_FIELDS_PATH, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("Failed to load custom fields config: %s", exc)
+            return []
+        raw_list = data.get("custom_fields") if isinstance(data, dict) else data
+        return _normalize_custom_fields(raw_list)
+
+    @staticmethod
+    def save(fields: List[Dict]) -> None:
+        normalized = _normalize_custom_fields(fields)
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        tmp = CUSTOM_FIELDS_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"custom_fields": normalized}, fh, indent=2)
+        os.replace(tmp, CUSTOM_FIELDS_PATH)

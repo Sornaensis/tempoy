@@ -6,7 +6,12 @@ import os
 import subprocess
 import sys
 
-from tempoy_app.config import AppConfig, CONFIG_DIR, COPILOT_API_MODES, DEFAULT_COPILOT_API_PORT
+from tempoy_app.config import (
+    AppConfig,
+    CONFIG_DIR,
+    COPILOT_API_MODES,
+    DEFAULT_COPILOT_API_PORT,
+)
 from tempoy_app.formatting import format_duration_hms, parse_duration_hms
 
 APP_NAME = "Tempoy"
@@ -41,10 +46,11 @@ class DurationSpinBox(QtWidgets.QSpinBox):
 
 
 class SettingsDialog(QtWidgets.QDialog):
-    def __init__(self, cfg: AppConfig, parent=None):
+    def __init__(self, cfg: AppConfig, parent=None, *, jira_client_factory=None):
         super().__init__(parent)
         self.setWindowTitle(f"{APP_NAME} — Settings")
         self.cfg = cfg
+        self._jira_client_factory = jira_client_factory
 
         form = QtWidgets.QFormLayout()
         self.jira_url = QtWidgets.QLineEdit(self.cfg.jira_base_url)
@@ -117,6 +123,11 @@ class SettingsDialog(QtWidgets.QDialog):
         self.copilot_enabled.toggled.connect(self.copilot_port.setEnabled)
         self.copilot_enabled.toggled.connect(self.copilot_mode.setEnabled)
 
+        self._btn_cf = QtWidgets.QPushButton("Configure Custom Fields…")
+        self._btn_cf.setToolTip("Open the MCP custom fields manager to add, edit, or remove custom fields.")
+        self._btn_cf.clicked.connect(self._open_custom_fields_dialog)
+        form.addRow(self._btn_cf)
+
         buttons = QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         self.button_box = QtWidgets.QDialogButtonBox(buttons)
         self.button_box.accepted.connect(self.accept)
@@ -159,6 +170,15 @@ class SettingsDialog(QtWidgets.QDialog):
         self.cfg.copilot_api_port = int(self.copilot_port.value())
         self.cfg.copilot_api_mode = str(self.copilot_mode.currentData())
         super().accept()
+
+    def _open_custom_fields_dialog(self) -> None:
+        from tempoy_app.ui.custom_field_picker import CustomFieldsDialog
+
+        dlg = CustomFieldsDialog(
+            jira_client_factory=self._jira_client_factory,
+            parent=self,
+        )
+        dlg.exec()
 
     @staticmethod
     def _open_config_directory():

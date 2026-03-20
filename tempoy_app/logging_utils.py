@@ -55,6 +55,11 @@ def _get_logger() -> logging.Logger:
             _logger = logging.getLogger(LOGGER_NAME)
             _logger.setLevel(logging.DEBUG)
             _logger.propagate = False
+
+            # Ensure tempoy_app.* module loggers are captured too
+            app_logger = logging.getLogger("tempoy_app")
+            app_logger.setLevel(logging.DEBUG)
+            app_logger.propagate = False
         if _logger_path != desired_path or not _logger.handlers:
             os.makedirs(os.path.dirname(desired_path), exist_ok=True)
             for handler in list(_logger.handlers):
@@ -69,6 +74,14 @@ def _get_logger() -> logging.Logger:
             file_handler.setLevel(logging.DEBUG)
             file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
             _logger.addHandler(file_handler)
+
+            # Share the handler with the tempoy_app logger hierarchy
+            app_logger = logging.getLogger("tempoy_app")
+            for h in list(app_logger.handlers):
+                app_logger.removeHandler(h)
+                h.close()
+            app_logger.addHandler(file_handler)
+
             _logger_path = desired_path
         return _logger
 

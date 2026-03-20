@@ -162,6 +162,10 @@ class TempoyApiServer:
                         token = self._read_bearer_token()
                         self._send_json(HTTPStatus.OK, outer._routes.get_allocation_draft(token=token))
                         return
+                    if self.path == "/custom-fields/schema":
+                        token = self._read_bearer_token()
+                        self._send_json(HTTPStatus.OK, outer._routes.discover_custom_fields(token=token))
+                        return
                     if self.path.startswith("/issues/") and self.path.endswith("/transitions"):
                         token = self._read_bearer_token()
                         issue_key = self.path.removeprefix("/issues/").removesuffix("/transitions")
@@ -214,6 +218,10 @@ class TempoyApiServer:
                     if self.path == "/issues/update":
                         token = self._read_bearer_token()
                         self._send_json(HTTPStatus.OK, outer._routes.update_issue(body, token=token))
+                        return
+                    if self.path == "/issues/update-custom-fields":
+                        token = self._read_bearer_token()
+                        self._send_json(HTTPStatus.OK, outer._routes.update_custom_fields(body, token=token))
                         return
                     if self.path == "/issues/transition":
                         token = self._read_bearer_token()

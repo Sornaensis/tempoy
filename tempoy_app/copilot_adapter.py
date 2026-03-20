@@ -96,6 +96,12 @@ class TempoyApiAdapter:
     def reset_allocation(self) -> Dict[str, Any]:
         return self._request("POST", "/allocation/reset", {})
 
+    def discover_custom_fields(self) -> Dict[str, Any]:
+        return self._request("GET", "/custom-fields/schema")
+
+    def update_custom_fields(self, **body: Any) -> Dict[str, Any]:
+        return self._request("POST", "/issues/update-custom-fields", body)
+
     def invoke(self, tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         normalized_tool_name = str(tool_name or "").strip()
         handlers = {
@@ -120,6 +126,8 @@ class TempoyApiAdapter:
             "set_allocation_lock": lambda payload: self.set_allocation_lock(**(payload or {})),
             "equalize_allocation": lambda payload: self.equalize_allocation(),
             "reset_allocation": lambda payload: self.reset_allocation(),
+            "discover_custom_fields": lambda payload: self.discover_custom_fields(),
+            "update_custom_fields": lambda payload: self.update_custom_fields(**(payload or {})),
         }
         if normalized_tool_name not in handlers:
             raise TempoyApiAdapterError(f"Unknown tool: {normalized_tool_name}")

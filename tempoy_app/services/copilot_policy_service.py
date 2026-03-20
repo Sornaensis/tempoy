@@ -4,7 +4,7 @@ import secrets
 import time
 from typing import Callable, Optional
 
-from tempoy_app.config import AppConfig
+from tempoy_app.config import AppConfig, CustomFieldsConfig
 from tempoy_app.models_copilot_api import CopilotApiCapabilities, CopilotApiSession
 
 
@@ -35,6 +35,7 @@ class CopilotPolicyService:
         can_read = config.copilot_api_enabled
         can_refine = config.copilot_api_enabled and config.copilot_api_mode in {"refine-only", "create-and-refine"}
         can_create = config.copilot_api_enabled and config.copilot_api_mode == "create-and-refine"
+        has_custom_fields = bool(CustomFieldsConfig.load())
         session_active = self.has_active_session(config)
         return CopilotApiCapabilities(
             api_enabled=config.copilot_api_enabled,
@@ -54,6 +55,8 @@ class CopilotPolicyService:
                 "issues_create": can_create,
                 "allocation_read": can_read,
                 "allocation_write": can_refine,
+                "custom_fields_read": can_read and has_custom_fields,
+                "custom_fields_write": can_refine and has_custom_fields,
             },
         )
 

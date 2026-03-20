@@ -1512,7 +1512,8 @@ class Floater(QtWidgets.QMainWindow):
         old_api_enabled = self.cfg.copilot_api_enabled
         old_api_port = self.cfg.copilot_api_port
         old_api_mode = self.cfg.copilot_api_mode
-        dlg = SettingsDialog(self.cfg, self)
+        jira_factory = (lambda: self.jira) if self.jira else None
+        dlg = SettingsDialog(self.cfg, self, jira_client_factory=jira_factory)
         if dlg.exec() == QtWidgets.QDialog.Accepted:
             ConfigManager.save(self.cfg)
             self.setWindowFlag(QtCore.Qt.WindowStaysOnTopHint, self.cfg.always_on_top)
