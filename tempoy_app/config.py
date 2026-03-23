@@ -89,6 +89,7 @@ class AppConfig:
     jira_api_token: str = ""
     tempo_api_token: str = ""
     daily_time_seconds: int = 28_800
+    worklog_start_time: str = "0900"
     reminder_enabled: bool = True
     reminder_time: str = "1500"
     always_on_top: bool = True
@@ -222,6 +223,16 @@ class AppConfig:
         if hours > 23 or minutes > 59:
             normalized_digits = "1500"
         cfg.reminder_time = normalized_digits
+
+        start_time = str(getattr(cfg, "worklog_start_time", "0900") or "0900").strip()
+        start_digits = "".join(ch for ch in start_time if ch.isdigit())
+        if len(start_digits) != 4:
+            start_digits = "0900"
+        sh, sm = int(start_digits[:2]), int(start_digits[2:])
+        if sh > 23 or sm > 59:
+            start_digits = "0900"
+        cfg.worklog_start_time = start_digits
+
         cfg.__dict__.pop("daily_time_minutes", None)
         cfg.__dict__.pop("reminder_minutes", None)
         return cfg

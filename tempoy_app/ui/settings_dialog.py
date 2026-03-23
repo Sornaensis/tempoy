@@ -61,6 +61,13 @@ class SettingsDialog(QtWidgets.QDialog):
         self.tempo_token.setEchoMode(QtWidgets.QLineEdit.Password)
         self.daily_time = DurationSpinBox()
         self.daily_time.setValue(self.cfg.daily_time_seconds)
+        self.worklog_start_time = QtWidgets.QTimeEdit()
+        self.worklog_start_time.setDisplayFormat("HHmm'hrs'")
+        self.worklog_start_time.setTime(self._parse_time_field(self.cfg.worklog_start_time, "0900"))
+        self.worklog_start_time.setToolTip(
+            "When submitting worklogs, the first entry starts at this time. "
+            "Subsequent entries are sequenced after the previous one."
+        )
         self.reminder_enabled = QtWidgets.QCheckBox("Enable daily reminder")
         self.reminder_enabled.setChecked(self.cfg.reminder_enabled)
         self.reminder_time = QtWidgets.QTimeEdit()
@@ -77,6 +84,7 @@ class SettingsDialog(QtWidgets.QDialog):
         form.addRow("Jira API token", self.jira_token)
         form.addRow("Tempo API token", self.tempo_token)
         form.addRow("Default time per day", self.daily_time)
+        form.addRow("Worklog start time", self.worklog_start_time)
         form.addRow("Daily reminder", self.reminder_enabled)
         form.addRow("Reminder time (local)", self.reminder_time)
         form.addRow(self.always_on_top)
@@ -151,10 +159,16 @@ class SettingsDialog(QtWidgets.QDialog):
 
     @staticmethod
     def _parse_reminder_time(value: str) -> QtCore.QTime:
-        raw_value = str(value or "1500").strip()
+        return SettingsDialog._parse_time_field(value, "1500")
+
+    @staticmethod
+    def _parse_time_field(value: str, default: str = "0900") -> QtCore.QTime:
+        raw_value = str(value or default).strip()
         parsed = QtCore.QTime.fromString(raw_value, "HHmm")
         if not parsed.isValid():
-            parsed = QtCore.QTime(15, 0)
+            parsed = QtCore.QTime.fromString(default, "HHmm")
+        if not parsed.isValid():
+            parsed = QtCore.QTime(9, 0)
         return parsed
 
     def accept(self):
@@ -163,6 +177,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.cfg.jira_api_token = self.jira_token.text().strip()
         self.cfg.tempo_api_token = self.tempo_token.text().strip()
         self.cfg.daily_time_seconds = int(self.daily_time.value())
+        self.cfg.worklog_start_time = self.worklog_start_time.time().toString("HHmm")
         self.cfg.reminder_enabled = bool(self.reminder_enabled.isChecked())
         self.cfg.reminder_time = self.reminder_time.time().toString("HHmm")
         self.cfg.always_on_top = bool(self.always_on_top.isChecked())

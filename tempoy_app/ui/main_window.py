@@ -1591,7 +1591,10 @@ class Floater(QtWidgets.QMainWindow):
             return
         resolved_issue_ids = self.worklog_service.resolve_issue_ids([row.issue_key for row in submittable_rows])
         selected_date = self.allocation_panel.selected_date()
-        when = dt.datetime.combine(selected_date, dt.datetime.now().time())
+        start_time_str = getattr(self.cfg, "worklog_start_time", "0900") or "0900"
+        start_hour = int(start_time_str[:2]) if len(start_time_str) == 4 else 9
+        start_minute = int(start_time_str[2:]) if len(start_time_str) == 4 else 0
+        current_time = dt.time(start_hour, start_minute)
         successes = []
         failures = []
         for row in submittable_rows:
@@ -1600,6 +1603,7 @@ class Floater(QtWidgets.QMainWindow):
                 failures.append(f"{row.issue_key}: missing issue id")
                 continue
             seconds = allocations.get(row.issue_key, 0)
+            when = dt.datetime.combine(selected_date, current_time)
             try:
                 self.tempo.create_worklog(
                     issue_key=row.issue_key,
@@ -1611,6 +1615,11 @@ class Floater(QtWidgets.QMainWindow):
                 )
                 successes.append((row.issue_key, seconds))
                 self._optimistically_update_issue_after_log(row.issue_key, seconds)
+                # Advance current_time by the duration just logged
+                total_minutes = current_time.hour * 60 + current_time.minute + (seconds // 60)
+                next_hour = min(total_minutes // 60, 23)
+                next_minute = total_minutes % 60
+                current_time = dt.time(next_hour, next_minute)
             except Exception as error:
                 failures.append(f"{row.issue_key}: {human_err(error)}")
         if successes:
