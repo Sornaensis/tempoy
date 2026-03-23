@@ -386,6 +386,40 @@ class ApiClientTests(unittest.TestCase):
         self.assertIn("/issue/ABC-1", fake_session.put_calls[0]["url"])
         self.assertEqual(fake_session.put_calls[0]["json"]["fields"]["summary"], "Updated")
 
+    def test_jira_search_users_sends_correct_request_and_normalizes_output(self) -> None:
+        fake_session = _FakeSession([
+            _FakeResponse([
+                {"accountId": "acct-1", "displayName": "Alice", "emailAddress": "alice@example.com", "active": True},
+                {"accountId": "acct-2", "displayName": "Bob", "active": False},
+                {"displayName": "No ID"},
+            ])
+        ])
+        with patch("tempoy_app.api.jira.requests.Session", return_value=fake_session):
+            client = JiraClient("https://example.atlassian.net", "me@example.com", "token")
+
+        users = client.search_users("ali", max_results=5)
+
+        self.assertEqual(len(users), 2)
+        self.assertEqual(users[0]["accountId"], "acct-1")
+        self.assertEqual(users[0]["displayName"], "Alice")
+        self.assertEqual(users[0]["emailAddress"], "alice@example.com")
+        self.assertTrue(users[0]["active"])
+        self.assertEqual(users[1]["accountId"], "acct-2")
+        self.assertFalse(users[1]["active"])
+        self.assertIn("/rest/api/3/user/search", fake_session.get_calls[0]["url"])
+        self.assertEqual(fake_session.get_calls[0]["params"]["query"], "ali")
+        self.assertEqual(fake_session.get_calls[0]["params"]["maxResults"], 5)
+
+    def test_jira_search_users_returns_empty_for_blank_query(self) -> None:
+        fake_session = _FakeSession([])
+        with patch("tempoy_app.api.jira.requests.Session", return_value=fake_session):
+            client = JiraClient("https://example.atlassian.net", "me@example.com", "token")
+
+        users = client.search_users("  ")
+
+        self.assertEqual(users, [])
+        self.assertEqual(len(fake_session.get_calls), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

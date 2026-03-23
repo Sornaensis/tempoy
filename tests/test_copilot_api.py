@@ -263,6 +263,14 @@ class _FakeJiraClient:
         self.transition_issue_calls.append({"issue_key": issue_key, "transition_id": transition_id})
         return None
 
+    def search_users(self, query, max_results=10):
+        return [
+            {"accountId": "acct-1", "displayName": "Alice Example", "emailAddress": "alice@example.com", "active": True},
+        ]
+
+    def get_myself(self):
+        return {"accountId": "acct-1", "displayName": "Test User"}
+
 
 class _ConfigStore:
     def __init__(self, config: AppConfig):
@@ -1288,6 +1296,123 @@ class TempoyApiServerTests(unittest.TestCase):
 
         self.assertFalse(capabilities["endpoints"]["custom_fields_read"])
         self.assertFalse(capabilities["endpoints"]["custom_fields_write"])
+
+    def test_search_users_returns_results(self) -> None:
+        _, session_payload = self._request("POST", "/session/start", payload={"client_name": "tests"})
+        token = session_payload["token"]
+        status, result = self._request(
+            "POST",
+            "/users/search",
+            payload={"query": "alice"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(result["query"], "alice")
+        self.assertEqual(len(result["results"]), 1)
+        self.assertEqual(result["results"][0]["accountId"], "acct-1")
+
+    def test_search_users_rejects_empty_query(self) -> None:
+        _, session_payload = self._request("POST", "/session/start", payload={"client_name": "tests"})
+        token = session_payload["token"]
+        with self.assertRaises(urllib.error.HTTPError) as exc_info:
+            self._request(
+                "POST",
+                "/users/search",
+                payload={"query": "  "},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        self.assertEqual(exc_info.exception.code, 400)
+
+
+class TempoyApiRecentWorklogsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.fake_jira_client = _FakeJiraClient()
+        self.fake_worklogs = [
+            {"issue": {"key": "ABC-1"}, "timeSpentSeconds": 3600, "startDate": "2026-03-10"},
+            {"issue": {"key": "ABC-1"}, "timeSpentSeconds": 1800, "startDate": "2026-03-09"},
+            {"issue": {"key": "OPS-1"}, "timeSpentSeconds": 900, "startDate": "2026-03-10"},
+        ]
+        self.store = _ConfigStore(
+            AppConfig(
+                copilot_api_enabled=True,
+                copilot_api_port=0,
+                copilot_api_mode="read-only",
+                copilot_allowed_projects=[],
+            )
+        )
+        self.server = TempoyApiServer(
+            port=0,
+            policy_service=CopilotPolicyService(config_loader=self.store.load, config_saver=self.store.save),
+            audit_service=CopilotAuditService(log_path=self.temp_dir.name + "/audit.log"),
+            jira_client_factory=lambda: self.fake_jira_client,
+            allocation_service=CopilotAllocationService(
+                config_loader=self.store.load,
+                daily_total_resolver=lambda config: 1800,
+            ),
+            tempo_client_factory=lambda: self._fake_tempo_client(),
+        )
+        host, port = self.server.start()
+        self.base_url = f"http://{host}:{port}"
+
+    def _fake_tempo_client(self):
+        parent = self
+
+        class _FakeTempoClient:
+            def get_recent_worked_issues(self, account_id, days_back=14):
+                return parent.fake_worklogs
+
+        return _FakeTempoClient()
+
+    def tearDown(self) -> None:
+        self.server.stop()
+        self.temp_dir.cleanup()
+
+    def _request(self, method: str, path: str, *, payload=None, headers=None):
+        data = None
+        final_headers = dict(headers or {})
+        if payload is not None:
+            data = json.dumps(payload).encode("utf-8")
+            final_headers.setdefault("Content-Type", "application/json")
+        request = urllib.request.Request(self.base_url + path, data=data, headers=final_headers, method=method)
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+
+    def test_get_recent_worklogs_aggregates_by_issue(self) -> None:
+        _, session_payload = self._request("POST", "/session/start", payload={"client_name": "tests"})
+        token = session_payload["token"]
+        status, result = self._request(
+            "POST",
+            "/worklogs/recent",
+            payload={"days_back": 14},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(result["days_back"], 14)
+        issues = result["issues"]
+        self.assertEqual(len(issues), 2)
+        abc1 = next(i for i in issues if i["issue_key"] == "ABC-1")
+        self.assertEqual(abc1["total_seconds"], 5400)
+        self.assertEqual(abc1["worklog_count"], 2)
+        self.assertEqual(abc1["last_logged_date"], "2026-03-10")
+        ops1 = next(i for i in issues if i["issue_key"] == "OPS-1")
+        self.assertEqual(ops1["total_seconds"], 900)
+        self.assertEqual(ops1["worklog_count"], 1)
+
+    def test_get_recent_worklogs_defaults_to_14_days(self) -> None:
+        _, session_payload = self._request("POST", "/session/start", payload={"client_name": "tests"})
+        token = session_payload["token"]
+        status, result = self._request(
+            "POST",
+            "/worklogs/recent",
+            payload={},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(result["days_back"], 14)
 
 
 if __name__ == "__main__":

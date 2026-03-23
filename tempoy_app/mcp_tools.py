@@ -200,6 +200,27 @@ TOOL_DEFINITIONS: List[McpToolDefinition] = [
             required=["issue_key", "fields"],
         ),
     ),
+    McpToolDefinition(
+        "search_users",
+        "Search for Jira users by name or email. Returns account IDs that can be used with the assignee filter in search_tickets or with update_issue_fields.",
+        _object_schema(
+            properties={
+                "query": {"type": "string", "description": "Name or email to search for."},
+                "max_results": {"type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum results to return (default 10)."},
+            },
+            required=["query"],
+        ),
+    ),
+    McpToolDefinition(
+        "get_recent_worklogs",
+        "Get a summary of issues the current user has logged time against recently. "
+        "Returns issue keys with total seconds and last logged date, sorted by most recent.",
+        _object_schema(
+            properties={
+                "days_back": {"type": "integer", "minimum": 1, "maximum": 90, "description": "Number of days to look back (default 7)."},
+            },
+        ),
+    ),
 ]
 
 

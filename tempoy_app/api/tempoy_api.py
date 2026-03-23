@@ -15,6 +15,7 @@ from tempoy_app.services.copilot_policy_service import CopilotPolicyError, Copil
 
 if TYPE_CHECKING:
     from tempoy_app.api.jira import JiraClient
+    from tempoy_app.api.tempo import TempoClient
 
 
 class TempoyApiServer:
@@ -26,6 +27,7 @@ class TempoyApiServer:
         policy_service: Optional[CopilotPolicyService] = None,
         audit_service: Optional[CopilotAuditService] = None,
         jira_client_factory: Optional[callable] = None,
+        tempo_client_factory: Optional[callable] = None,
         allocation_service: Optional[CopilotAllocationService] = None,
         on_allocation_changed: Optional[callable] = None,
     ):
@@ -40,6 +42,7 @@ class TempoyApiServer:
         self._server: Optional[ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
         self._jira_client_factory = jira_client_factory or self._default_jira_client_factory
+        self._tempo_client_factory = tempo_client_factory or self._default_tempo_client_factory
         self._allocation_service = allocation_service or CopilotAllocationService(
             config_loader=self._policy_service.get_config,
             config_saver=ConfigManager.save,
@@ -50,6 +53,7 @@ class TempoyApiServer:
             audit_service=self._audit_service,
             jira_client_factory=self._jira_client_factory,
             allocation_service=self._allocation_service,
+            tempo_client_factory=self._tempo_client_factory,
         )
 
     @property
@@ -130,6 +134,14 @@ class TempoyApiServer:
             raise RuntimeError("Jira is not configured")
         return JiraClient(config.jira_base_url, config.jira_email, config.jira_api_token)
 
+    def _default_tempo_client_factory(self) -> TempoClient:
+        from tempoy_app.api.tempo import TempoClient
+
+        config = self._policy_service.get_config()
+        if not config.tempo_api_token:
+            raise RuntimeError("Tempo is not configured")
+        return TempoClient(config.tempo_api_token)
+
     def _build_handler(self):
         outer = self
 
@@ -158,13 +170,13 @@ class TempoyApiServer:
                         project_key = self.path.removeprefix("/projects/").removesuffix("/create-schema").strip("/")
                         self._send_json(HTTPStatus.OK, outer._routes.get_project_create_schema(project_key, token=token))
                         return
-                    if self.path == "/allocation/draft":
-                        token = self._read_bearer_token()
-                        self._send_json(HTTPStatus.OK, outer._routes.get_allocation_draft(token=token))
-                        return
                     if self.path == "/custom-fields/schema":
                         token = self._read_bearer_token()
                         self._send_json(HTTPStatus.OK, outer._routes.discover_custom_fields(token=token))
+                        return
+                    if self.path == "/allocation/draft":
+                        token = self._read_bearer_token()
+                        self._send_json(HTTPStatus.OK, outer._routes.get_allocation_draft(token=token))
                         return
                     if self.path.startswith("/issues/") and self.path.endswith("/transitions"):
                         token = self._read_bearer_token()
@@ -250,6 +262,14 @@ class TempoyApiServer:
                     if self.path == "/allocation/reset":
                         token = self._read_bearer_token()
                         self._send_json(HTTPStatus.OK, outer._routes.reset_allocation(token=token))
+                        return
+                    if self.path == "/users/search":
+                        token = self._read_bearer_token()
+                        self._send_json(HTTPStatus.OK, outer._routes.search_users(body, token=token))
+                        return
+                    if self.path == "/worklogs/recent":
+                        token = self._read_bearer_token()
+                        self._send_json(HTTPStatus.OK, outer._routes.get_recent_worklogs(body, token=token))
                         return
                     self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
                 except CopilotPolicyError as exc:

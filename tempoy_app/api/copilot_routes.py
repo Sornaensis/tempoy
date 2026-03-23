@@ -22,11 +22,13 @@ class CopilotRoutes:
         audit_service: CopilotAuditService,
         jira_client_factory: Callable[[], JiraClient],
         allocation_service: CopilotAllocationService,
+        tempo_client_factory: Optional[Callable] = None,
     ):
         self._policy_service = policy_service
         self._audit_service = audit_service
         self._jira_client_factory = jira_client_factory
         self._allocation_service = allocation_service
+        self._tempo_client_factory = tempo_client_factory
 
     def get_allocation_draft(self, *, token: Optional[str]) -> Dict[str, object]:
         self._policy_service.require_session_token(token)
@@ -918,3 +920,52 @@ class CopilotRoutes:
             detail={"issue_key": normalized_issue_key, "project_key": project_key, "field_count": len(jira_fields)},
         )
         return {"applied": True, "preview": preview, "issue": updated_issue}
+
+    def search_users(self, body: Dict[str, Any], *, token: Optional[str]) -> Dict[str, object]:
+        self._policy_service.require_session_token(token)
+        query = str(body.get("query") or "").strip()
+        if not query:
+            raise ValueError("Query is required")
+        max_results = int(body.get("max_results", 10))
+        jira_client = self._jira_client_factory()
+        users = jira_client.search_users(query, max_results=max_results)
+        self._audit_service.log_event(
+            operation="users.search",
+            success=True,
+            category="read",
+            detail={"query": query, "result_count": len(users)},
+        )
+        return {"query": query, "results": users}
+
+    def get_recent_worklogs(self, body: Dict[str, Any], *, token: Optional[str]) -> Dict[str, object]:
+        self._policy_service.require_session_token(token)
+        days_back = max(1, min(int(body.get("days_back", 14)), 90))
+        if self._tempo_client_factory is None:
+            raise RuntimeError("Tempo is not configured")
+        jira_client = self._jira_client_factory()
+        myself = jira_client.get_myself()
+        account_id = myself.get("accountId") or ""
+        if not account_id:
+            raise RuntimeError("Could not determine current user account ID")
+        tempo_client = self._tempo_client_factory()
+        raw_worklogs = tempo_client.get_recent_worked_issues(account_id=account_id, days_back=days_back)
+        by_issue: Dict[str, Dict[str, object]] = {}
+        for entry in raw_worklogs:
+            issue = entry.get("issue") or {}
+            key = str(issue.get("key") or "").strip()
+            if not key:
+                continue
+            bucket = by_issue.setdefault(key, {"issue_key": key, "total_seconds": 0, "worklog_count": 0, "last_logged_date": ""})
+            bucket["total_seconds"] = int(bucket["total_seconds"]) + int(entry.get("timeSpentSeconds", 0))
+            bucket["worklog_count"] = int(bucket["worklog_count"]) + 1
+            start_date = str(entry.get("startDate") or "")
+            if start_date > str(bucket["last_logged_date"]):
+                bucket["last_logged_date"] = start_date
+        results = sorted(by_issue.values(), key=lambda r: str(r.get("last_logged_date", "")), reverse=True)
+        self._audit_service.log_event(
+            operation="worklogs.recent",
+            success=True,
+            category="read",
+            detail={"days_back": days_back, "issue_count": len(results)},
+        )
+        return {"days_back": days_back, "issues": results}

@@ -102,6 +102,12 @@ class TempoyApiAdapter:
     def update_custom_fields(self, **body: Any) -> Dict[str, Any]:
         return self._request("POST", "/issues/update-custom-fields", body)
 
+    def search_users(self, **body: Any) -> Dict[str, Any]:
+        return self._request("POST", "/users/search", body)
+
+    def get_recent_worklogs(self, **body: Any) -> Dict[str, Any]:
+        return self._request("POST", "/worklogs/recent", body)
+
     def invoke(self, tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         normalized_tool_name = str(tool_name or "").strip()
         handlers = {
@@ -128,6 +134,8 @@ class TempoyApiAdapter:
             "reset_allocation": lambda payload: self.reset_allocation(),
             "discover_custom_fields": lambda payload: self.discover_custom_fields(),
             "update_custom_fields": lambda payload: self.update_custom_fields(**(payload or {})),
+            "search_users": lambda payload: self.search_users(**(payload or {})),
+            "get_recent_worklogs": lambda payload: self.get_recent_worklogs(**(payload or {})),
         }
         if normalized_tool_name not in handlers:
             raise TempoyApiAdapterError(f"Unknown tool: {normalized_tool_name}")

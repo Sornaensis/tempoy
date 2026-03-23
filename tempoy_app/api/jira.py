@@ -727,3 +727,25 @@ class JiraClient:
             if parsed_datetime is not None and parsed_datetime.astimezone().date() == local_today:
                 today += seconds
         return (today, total)
+
+    def search_users(self, query: str, max_results: int = 10) -> List[Dict]:
+        normalized_query = str(query or "").strip()
+        if not normalized_query:
+            return []
+        response = self.session.get(
+            f"{self.base_url}/rest/api/3/user/search",
+            params={"query": normalized_query, "maxResults": max(1, min(int(max_results), 50))},
+            timeout=20,
+        )
+        response.raise_for_status()
+        users = response.json() or []
+        return [
+            {
+                "accountId": str(user.get("accountId") or ""),
+                "displayName": str(user.get("displayName") or ""),
+                "emailAddress": str(user.get("emailAddress") or ""),
+                "active": bool(user.get("active", True)),
+            }
+            for user in users
+            if isinstance(user, dict) and user.get("accountId")
+        ]
