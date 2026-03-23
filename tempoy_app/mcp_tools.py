@@ -87,7 +87,10 @@ TOOL_DEFINITIONS: List[McpToolDefinition] = [
     McpToolDefinition("get_allocation_draft", "Get the current Tempoy allocation draft and derived daily context.", _object_schema()),
     McpToolDefinition(
         "create_ticket",
-        "Create a Task in Jira through Tempoy's preview/apply guarded flow.",
+        "Create a Task in Jira through Tempoy. "
+        "Two-step flow: first call WITHOUT apply to get a preview of what will be created. "
+        "Then call again with apply=true to execute. If the preview response has requires_confirmation=true, "
+        "you MUST also set confirm=true to actually create the issue — otherwise the write will not happen.",
         _object_schema(
             properties={
                 "project_key": {"type": "string"},
@@ -95,15 +98,18 @@ TOOL_DEFINITIONS: List[McpToolDefinition] = [
                 "description_text": {"type": "string"},
                 "labels": {"type": "array", "items": {"type": "string"}},
                 "priority": {"type": "string"},
-                "apply": {"type": "boolean"},
-                "confirm": {"type": "boolean"},
+                "apply": {"type": "boolean", "description": "Set true to execute the create (after previewing). Without this, returns a preview only."},
+                "confirm": {"type": "boolean", "description": "Required when the preview response has requires_confirmation=true. Both apply and confirm must be true to write."},
             },
             required=["project_key", "summary"],
         ),
     ),
     McpToolDefinition(
         "update_issue_fields",
-        "Refine an issue through Tempoy's constrained preview/apply update flow.",
+        "Update standard fields on a Jira issue through Tempoy. "
+        "Two-step flow: first call WITHOUT apply to preview the changes (shows current vs proposed values). "
+        "Then call again with apply=true to execute. If the preview response has requires_confirmation=true, "
+        "you MUST also set confirm=true to actually write — otherwise the update will not happen.",
         _object_schema(
             properties={
                 "issue_key": {"type": "string"},
@@ -113,9 +119,9 @@ TOOL_DEFINITIONS: List[McpToolDefinition] = [
                 "priority": {"type": "string"},
                 "parent_key": {"type": "string"},
                 "acceptance_criteria_text": {"type": "string"},
-                "assignee_account_id": {"type": "string", "description": "Jira account ID of the assignee, or empty string to unassign"},
-                "apply": {"type": "boolean"},
-                "confirm": {"type": "boolean"},
+                "assignee_account_id": {"type": "string", "description": "Jira account ID of the assignee, or empty string to unassign. Use search_users to find account IDs."},
+                "apply": {"type": "boolean", "description": "Set true to execute the update (after previewing). Without this, returns a preview only."},
+                "confirm": {"type": "boolean", "description": "Required when the preview response has requires_confirmation=true. Both apply and confirm must be true to write."},
             },
             required=["issue_key"],
         ),
@@ -130,13 +136,16 @@ TOOL_DEFINITIONS: List[McpToolDefinition] = [
     ),
     McpToolDefinition(
         "transition_issue",
-        "Move a Jira issue to a new status through Tempoy's preview/apply guarded flow.",
+        "Move a Jira issue to a new status through Tempoy. Use get_issue_transitions first to see available transitions. "
+        "Two-step flow: first call WITHOUT apply to preview the transition. "
+        "Then call again with apply=true to execute. If the preview response has requires_confirmation=true, "
+        "you MUST also set confirm=true to actually transition — otherwise it will not happen.",
         _object_schema(
             properties={
                 "issue_key": {"type": "string", "description": "Jira issue key, such as ABC-123."},
-                "transition_name": {"type": "string", "description": "Target status or transition name (case-insensitive match)."},
-                "apply": {"type": "boolean"},
-                "confirm": {"type": "boolean"},
+                "transition_name": {"type": "string", "description": "Target status or transition name (case-insensitive match). Use get_issue_transitions to discover valid names."},
+                "apply": {"type": "boolean", "description": "Set true to execute the transition (after previewing). Without this, returns a preview only."},
+                "confirm": {"type": "boolean", "description": "Required when the preview response has requires_confirmation=true. Both apply and confirm must be true to write."},
             },
             required=["issue_key", "transition_name"],
         ),
@@ -184,7 +193,10 @@ TOOL_DEFINITIONS: List[McpToolDefinition] = [
     McpToolDefinition(
         "update_custom_fields",
         "Update one or more configured custom fields on a Jira issue. "
-        "Use discover_custom_fields first to learn available fields and their constraints.",
+        "Use discover_custom_fields first to learn available fields and their constraints. "
+        "Two-step flow: first call WITHOUT apply to preview changes (shows current vs proposed values). "
+        "Then call again with apply=true to execute. If the preview response has requires_confirmation=true, "
+        "you MUST also set confirm=true to actually write — otherwise the update will not happen.",
         _object_schema(
             properties={
                 "issue_key": {"type": "string", "description": "Jira issue key, such as ABC-123."},
@@ -194,8 +206,8 @@ TOOL_DEFINITIONS: List[McpToolDefinition] = [
                                    "Field names must match configured names from discover_custom_fields.",
                     "additionalProperties": True,
                 },
-                "apply": {"type": "boolean"},
-                "confirm": {"type": "boolean"},
+                "apply": {"type": "boolean", "description": "Set true to execute the update (after previewing). Without this, returns a preview only."},
+                "confirm": {"type": "boolean", "description": "Required when the preview response has requires_confirmation=true. Both apply and confirm must be true to write."},
             },
             required=["issue_key", "fields"],
         ),
