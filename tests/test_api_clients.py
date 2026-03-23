@@ -152,10 +152,94 @@ class ApiClientTests(unittest.TestCase):
 
         payload = fake_session.post_calls[0]["json"]
         self.assertIn('project = "ABC"', payload["jql"])
-        self.assertIn('summary ~ "refactor widget"', payload["jql"])
+        self.assertIn('text ~ "refactor widget"', payload["jql"])
         self.assertIn('issuetype in ("Task", "Bug")', payload["jql"])
         self.assertIn('status in ("In Progress", "To Do")', payload["jql"])
         self.assertEqual(payload["maxResults"], 10)
+
+    def test_jira_search_issues_builds_assignee_clauses(self) -> None:
+        fake_session = _FakeSession([
+            _FakeResponse({"issues": []}),
+            _FakeResponse({"issues": []}),
+            _FakeResponse({"issues": []}),
+        ])
+        with patch("tempoy_app.api.jira.requests.Session", return_value=fake_session):
+            client = JiraClient("https://example.atlassian.net", "me@example.com", "token")
+
+        client.search_issues(assignee="currentUser")
+        self.assertIn("assignee = currentUser()", fake_session.post_calls[0]["json"]["jql"])
+
+        client.search_issues(assignee="unassigned")
+        self.assertIn("assignee is EMPTY", fake_session.post_calls[1]["json"]["jql"])
+
+        client.search_issues(assignee="abc123def")
+        self.assertIn('assignee = "abc123def"', fake_session.post_calls[2]["json"]["jql"])
+
+    def test_jira_search_issues_builds_label_priority_parent_clauses(self) -> None:
+        fake_session = _FakeSession([_FakeResponse({"issues": []})])
+        with patch("tempoy_app.api.jira.requests.Session", return_value=fake_session):
+            client = JiraClient("https://example.atlassian.net", "me@example.com", "token")
+
+        client.search_issues(labels=["backend", "api"], priority="High", parent_key="PROJ-100")
+
+        jql = fake_session.post_calls[0]["json"]["jql"]
+        self.assertIn('labels = "backend"', jql)
+        self.assertIn('labels = "api"', jql)
+        self.assertIn('priority = "High"', jql)
+        self.assertIn('parent = "PROJ-100"', jql)
+
+    def test_jira_search_issues_labels_any_uses_in_clause(self) -> None:
+        fake_session = _FakeSession([_FakeResponse({"issues": []})])
+        with patch("tempoy_app.api.jira.requests.Session", return_value=fake_session):
+            client = JiraClient("https://example.atlassian.net", "me@example.com", "token")
+
+        client.search_issues(labels=["frontend", "backend"], labels_match="any")
+
+        jql = fake_session.post_calls[0]["json"]["jql"]
+        self.assertIn('labels in ("frontend", "backend")', jql)
+        self.assertNotIn('labels = "frontend"', jql)
+
+    def test_jira_search_issues_builds_date_range_and_order_clauses(self) -> None:
+        fake_session = _FakeSession([_FakeResponse({"issues": []})])
+        with patch("tempoy_app.api.jira.requests.Session", return_value=fake_session):
+            client = JiraClient("https://example.atlassian.net", "me@example.com", "token")
+
+        client.search_issues(updated_after="2026-03-01", created_after="2026-01-01", order_by="created")
+
+        jql = fake_session.post_calls[0]["json"]["jql"]
+        self.assertIn('updated >= "2026-03-01"', jql)
+        self.assertIn('created >= "2026-01-01"', jql)
+        self.assertTrue(jql.endswith("ORDER BY created DESC"))
+
+    def test_jira_search_issues_priority_order_sorts_ascending(self) -> None:
+        fake_session = _FakeSession([_FakeResponse({"issues": []})])
+        with patch("tempoy_app.api.jira.requests.Session", return_value=fake_session):
+            client = JiraClient("https://example.atlassian.net", "me@example.com", "token")
+
+        client.search_issues(query="fix", order_by="priority")
+
+        jql = fake_session.post_calls[0]["json"]["jql"]
+        self.assertTrue(jql.endswith("ORDER BY priority ASC"))
+
+    def test_jira_search_issues_builds_custom_field_clauses(self) -> None:
+        fake_session = _FakeSession([_FakeResponse({"issues": []})])
+        with patch("tempoy_app.api.jira.requests.Session", return_value=fake_session):
+            client = JiraClient("https://example.atlassian.net", "me@example.com", "token")
+
+        client.search_issues(
+            custom_field_filters=[
+                {"field_id": "customfield_10050", "type": "string", "value": "acme"},
+                {"field_id": "customfield_10051", "type": "option", "value": "Red"},
+                {"field_id": "customfield_10052", "type": "number", "value": 42},
+                {"field_id": "customfield_10053", "type": "multi_option", "value": ["A", "B"]},
+            ],
+        )
+
+        jql = fake_session.post_calls[0]["json"]["jql"]
+        self.assertIn('cf[10050] ~ "acme"', jql)
+        self.assertIn('cf[10051] = "Red"', jql)
+        self.assertIn("cf[10052] = 42.0", jql)
+        self.assertIn('cf[10053] in ("A", "B")', jql)
 
     def test_jira_get_issues_by_keys_uses_default_fields(self) -> None:
         fake_session = _FakeSession([_FakeResponse({"issues": []})])

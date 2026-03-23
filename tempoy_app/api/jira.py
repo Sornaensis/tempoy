@@ -502,6 +502,15 @@ class JiraClient:
         project_key: Optional[str] = None,
         issue_types: Optional[List[str]] = None,
         status_filters: Optional[List[str]] = None,
+        assignee: Optional[str] = None,
+        labels: Optional[List[str]] = None,
+        labels_match: Optional[str] = None,
+        priority: Optional[str] = None,
+        updated_after: Optional[str] = None,
+        created_after: Optional[str] = None,
+        parent_key: Optional[str] = None,
+        order_by: Optional[str] = None,
+        custom_field_filters: Optional[List[Dict]] = None,
         max_results: int = 25,
         fields: Optional[List[str]] = None,
     ) -> List[Dict]:
@@ -509,6 +518,13 @@ class JiraClient:
         normalized_project_key = str(project_key or "").strip().upper()
         normalized_issue_types = [str(item or "").strip() for item in (issue_types or []) if str(item or "").strip()]
         normalized_status_filters = [str(item or "").strip() for item in (status_filters or []) if str(item or "").strip()]
+        normalized_assignee = str(assignee or "").strip()
+        normalized_labels = [str(item or "").strip() for item in (labels or []) if str(item or "").strip()]
+        normalized_priority = str(priority or "").strip()
+        normalized_updated_after = str(updated_after or "").strip()
+        normalized_created_after = str(created_after or "").strip()
+        normalized_parent_key = str(parent_key or "").strip().upper()
+        normalized_order_by = str(order_by or "").strip().lower()
 
         clauses: List[str] = []
         if normalized_project_key:
@@ -520,7 +536,7 @@ class JiraClient:
                 clauses.append(f'key = "{escaped_query}"')
             else:
                 escaped_query = self._escape_jql_value(normalized_query)
-                clauses.append(f'summary ~ "{escaped_query}"')
+                clauses.append(f'text ~ "{escaped_query}"')
 
         if normalized_issue_types:
             issue_type_values = ", ".join(f'"{self._escape_jql_value(value)}"' for value in normalized_issue_types)
@@ -530,9 +546,62 @@ class JiraClient:
             status_values = ", ".join(f'"{self._escape_jql_value(value)}"' for value in normalized_status_filters)
             clauses.append(f"status in ({status_values})")
 
-        jql = " AND ".join(clauses) if clauses else "ORDER BY updated DESC"
+        if normalized_assignee:
+            lower = normalized_assignee.lower()
+            if lower == "currentuser":
+                clauses.append("assignee = currentUser()")
+            elif lower == "unassigned":
+                clauses.append("assignee is EMPTY")
+            else:
+                clauses.append(f'assignee = "{self._escape_jql_value(normalized_assignee)}"')
+
+        if normalized_labels:
+            match_mode = str(labels_match or "").strip().lower()
+            if match_mode == "any":
+                label_values = ", ".join(f'"{self._escape_jql_value(label)}"' for label in normalized_labels)
+                clauses.append(f"labels in ({label_values})")
+            else:
+                for label in normalized_labels:
+                    clauses.append(f'labels = "{self._escape_jql_value(label)}"')
+
+        if normalized_priority:
+            clauses.append(f'priority = "{self._escape_jql_value(normalized_priority)}"')
+
+        if normalized_updated_after:
+            clauses.append(f'updated >= "{self._escape_jql_value(normalized_updated_after)}"')
+
+        if normalized_created_after:
+            clauses.append(f'created >= "{self._escape_jql_value(normalized_created_after)}"')
+
+        if normalized_parent_key:
+            clauses.append(f'parent = "{self._escape_jql_value(normalized_parent_key)}"')
+
+        for cf in (custom_field_filters or []):
+            cf_id = str(cf.get("field_id") or "").strip()
+            cf_type = str(cf.get("type") or "").strip().lower()
+            cf_value = cf.get("value")
+            if not cf_id or cf_value is None:
+                continue
+            jql_field = f'cf[{cf_id.replace("customfield_", "")}]' if cf_id.startswith("customfield_") else f'"{self._escape_jql_value(cf_id)}"'
+            if cf_type == "string":
+                clauses.append(f'{jql_field} ~ "{self._escape_jql_value(str(cf_value))}"')
+            elif cf_type == "number":
+                clauses.append(f'{jql_field} = {float(cf_value)}')
+            elif cf_type == "option":
+                clauses.append(f'{jql_field} = "{self._escape_jql_value(str(cf_value))}"')
+            elif cf_type == "multi_option":
+                if isinstance(cf_value, list):
+                    vals = ", ".join(f'"{self._escape_jql_value(str(v))}"' for v in cf_value)
+                    clauses.append(f'{jql_field} in ({vals})')
+                else:
+                    clauses.append(f'{jql_field} = "{self._escape_jql_value(str(cf_value))}"')
+
+        allowed_order = {"updated": "updated DESC", "created": "created DESC", "priority": "priority ASC"}
+        order_clause = allowed_order.get(normalized_order_by, "updated DESC")
+
+        jql = " AND ".join(clauses) if clauses else f"ORDER BY {order_clause}"
         if clauses:
-            jql = f"{jql} ORDER BY updated DESC"
+            jql = f"{jql} ORDER BY {order_clause}"
         return self._search_jql(jql=jql, max_results=max(1, min(int(max_results), 100)), fields=fields or DEFAULT_SEARCH_FIELDS)
 
     def search_by_keys(self, issue_keys: List[str], fields: List[str], order_by_updated: bool = False) -> List[Dict]:

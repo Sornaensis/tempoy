@@ -64,9 +64,32 @@ class CopilotRoutes:
         project_key = str(body.get("project_key") or "").strip().upper() or None
         issue_types = self._normalize_string_list(body.get("issue_types"))
         status_filters = self._normalize_string_list(body.get("status_filters"))
+        assignee = str(body.get("assignee") or "").strip() or None
+        labels = self._normalize_string_list(body.get("labels"))
+        labels_match = str(body.get("labels_match") or "").strip().lower() or None
+        priority = str(body.get("priority") or "").strip() or None
+        updated_after = str(body.get("updated_after") or "").strip() or None
+        created_after = str(body.get("created_after") or "").strip() or None
+        parent_key = str(body.get("parent_key") or "").strip().upper() or None
+        order_by = str(body.get("order_by") or "").strip().lower() or None
+        raw_custom_field_filters = body.get("custom_fields") or {}
         max_results = self._coerce_page_size(body.get("page_size"))
         if project_key and not self._policy_service.is_project_allowed(project_key):
             raise CopilotPolicyError("Project is not allowed")
+
+        custom_field_filters: list[dict] = []
+        if isinstance(raw_custom_field_filters, dict) and raw_custom_field_filters:
+            configured_fields = CustomFieldsConfig.load()
+            field_lookup = {f["name"].casefold(): f for f in configured_fields}
+            for name, value in raw_custom_field_filters.items():
+                defn = field_lookup.get(str(name).strip().casefold())
+                if defn is None:
+                    raise ValueError(f"Unknown custom field: {name}")
+                custom_field_filters.append({
+                    "field_id": defn["field_id"],
+                    "type": defn["type"],
+                    "value": value,
+                })
 
         jira_client = self._jira_client_factory()
         issues = jira_client.search_issues(
@@ -74,6 +97,15 @@ class CopilotRoutes:
             project_key=project_key,
             issue_types=issue_types,
             status_filters=status_filters,
+            assignee=assignee,
+            labels=labels or None,
+            labels_match=labels_match,
+            priority=priority,
+            updated_after=updated_after,
+            created_after=created_after,
+            parent_key=parent_key,
+            order_by=order_by,
+            custom_field_filters=custom_field_filters or None,
             max_results=max_results,
         )
         normalized = JiraAnalysisService(jira_base_url=jira_client.base_url).normalize_issues(
@@ -97,6 +129,13 @@ class CopilotRoutes:
             "project_key": project_key,
             "issue_types": issue_types,
             "status_filters": status_filters,
+            "assignee": assignee,
+            "labels": labels,
+            "priority": priority,
+            "updated_after": updated_after,
+            "created_after": created_after,
+            "parent_key": parent_key,
+            "order_by": order_by,
             "results": normalized,
         }
 

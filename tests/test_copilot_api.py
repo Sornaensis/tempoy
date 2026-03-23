@@ -506,6 +506,80 @@ class TempoyApiServerTests(unittest.TestCase):
         self.assertEqual(payload["results"][0]["linked_issues"][0]["key"], "ABC-2")
         self.assertEqual(self.fake_jira_client.search_calls[0]["project_key"], "ABC")
 
+    def test_issue_search_passes_extended_filters_to_jira_client(self) -> None:
+        _, session_payload = self._request("POST", "/session/start", payload={"client_name": "tests"})
+        status, payload = self._request(
+            "POST",
+            "/issues/search",
+            payload={
+                "assignee": "currentUser",
+                "labels": ["backend"],
+                "priority": "High",
+                "updated_after": "2026-03-01",
+                "created_after": "2026-01-01",
+                "parent_key": "ABC-0",
+                "order_by": "created",
+            },
+            headers={"Authorization": f"Bearer {session_payload['token']}"},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["assignee"], "currentUser")
+        self.assertEqual(payload["labels"], ["backend"])
+        self.assertEqual(payload["priority"], "High")
+        self.assertEqual(payload["updated_after"], "2026-03-01")
+        self.assertEqual(payload["created_after"], "2026-01-01")
+        self.assertEqual(payload["parent_key"], "ABC-0")
+        self.assertEqual(payload["order_by"], "created")
+        call_kwargs = self.fake_jira_client.search_calls[0]
+        self.assertEqual(call_kwargs["assignee"], "currentUser")
+        self.assertEqual(call_kwargs["labels"], ["backend"])
+        self.assertEqual(call_kwargs["priority"], "High")
+        self.assertEqual(call_kwargs["updated_after"], "2026-03-01")
+        self.assertEqual(call_kwargs["created_after"], "2026-01-01")
+        self.assertEqual(call_kwargs["parent_key"], "ABC-0")
+        self.assertEqual(call_kwargs["order_by"], "created")
+
+    def test_issue_search_resolves_custom_field_filters_from_config(self) -> None:
+        _, session_payload = self._request("POST", "/session/start", payload={"client_name": "tests"})
+
+        # Write a custom fields config so the route can resolve names
+        import tempfile, os, json as _json
+        from tempoy_app.config import CUSTOM_FIELDS_PATH, CONFIG_DIR
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        original_exists = os.path.exists(CUSTOM_FIELDS_PATH)
+        original_content = None
+        if original_exists:
+            with open(CUSTOM_FIELDS_PATH, "r", encoding="utf-8") as fh:
+                original_content = fh.read()
+        try:
+            with open(CUSTOM_FIELDS_PATH, "w", encoding="utf-8") as fh:
+                _json.dump({"custom_fields": [
+                    {"name": "Team", "field_id": "customfield_10050", "type": "option"},
+                    {"name": "Sprint", "field_id": "customfield_10051", "type": "string"},
+                ]}, fh)
+
+            status, payload = self._request(
+                "POST",
+                "/issues/search",
+                payload={"custom_fields": {"Team": "Alpha"}},
+                headers={"Authorization": f"Bearer {session_payload['token']}"},
+            )
+
+            self.assertEqual(status, 200)
+            cf_filters = self.fake_jira_client.search_calls[0].get("custom_field_filters")
+            self.assertIsNotNone(cf_filters)
+            self.assertEqual(len(cf_filters), 1)
+            self.assertEqual(cf_filters[0]["field_id"], "customfield_10050")
+            self.assertEqual(cf_filters[0]["type"], "option")
+            self.assertEqual(cf_filters[0]["value"], "Alpha")
+        finally:
+            if original_content is not None:
+                with open(CUSTOM_FIELDS_PATH, "w", encoding="utf-8") as fh:
+                    fh.write(original_content)
+            elif os.path.exists(CUSTOM_FIELDS_PATH):
+                os.remove(CUSTOM_FIELDS_PATH)
+
     def test_issue_detail_requires_session_and_returns_normalized_payload(self) -> None:
         with self.assertRaises(urllib.error.HTTPError) as exc_info:
             self._request("GET", "/issues/ABC-1")
