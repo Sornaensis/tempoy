@@ -183,6 +183,11 @@ class TempoyApiServer:
                         issue_key = self.path.removeprefix("/issues/").removesuffix("/transitions")
                         self._send_json(HTTPStatus.OK, outer._routes.get_issue_transitions(issue_key, token=token))
                         return
+                    if self.path.startswith("/issues/") and self.path.endswith("/dev-info"):
+                        token = self._read_bearer_token()
+                        issue_key = self.path.removeprefix("/issues/").removesuffix("/dev-info")
+                        self._send_json(HTTPStatus.OK, outer._routes.get_issue_dev_info(issue_key, token=token))
+                        return
                     if self.path.startswith("/issues/"):
                         token = self._read_bearer_token()
                         issue_key = self.path.removeprefix("/issues/")

@@ -420,6 +420,30 @@ class ApiClientTests(unittest.TestCase):
         self.assertEqual(users, [])
         self.assertEqual(len(fake_session.get_calls), 0)
 
+    def test_jira_get_dev_info_fetches_and_normalizes_dev_status(self) -> None:
+        fake_session = _FakeSession([
+            _FakeResponse({
+                "detail": [{
+                    "branches": [{"name": "feature/ABC-1", "url": "https://github.com/org/repo/tree/feature/ABC-1"}],
+                    "commits": [{"id": "abc123", "message": "fix", "author": {"name": "Alice"}, "url": "https://github.com/org/repo/commit/abc123"}],
+                    "pullRequests": [{"id": "42", "name": "Fix PR", "status": "OPEN", "url": "https://github.com/org/repo/pull/42", "author": {"name": "Alice"}}],
+                }]
+            })
+        ])
+        with patch("tempoy_app.api.jira.requests.Session", return_value=fake_session):
+            client = JiraClient("https://example.atlassian.net", "me@example.com", "token")
+
+        result = client.get_dev_info("12345")
+
+        self.assertEqual(len(result["branches"]), 1)
+        self.assertEqual(result["branches"][0]["name"], "feature/ABC-1")
+        self.assertEqual(len(result["commits"]), 1)
+        self.assertEqual(result["commits"][0]["id"], "abc123")
+        self.assertEqual(len(result["pullRequests"]), 1)
+        self.assertEqual(result["pullRequests"][0]["status"], "OPEN")
+        self.assertIn("/rest/dev-status/latest/issue/detail", fake_session.get_calls[0]["url"])
+        self.assertEqual(fake_session.get_calls[0]["params"]["issueId"], "12345")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -271,6 +271,13 @@ class _FakeJiraClient:
     def get_myself(self):
         return {"accountId": "acct-1", "displayName": "Test User"}
 
+    def get_dev_info(self, issue_id):
+        return {
+            "branches": [{"name": "feature/ABC-1-widget", "url": "https://github.com/org/repo/tree/feature/ABC-1-widget"}],
+            "commits": [{"id": "abc123", "message": "fix widget", "author": {"name": "Alice"}, "url": "https://github.com/org/repo/commit/abc123"}],
+            "pullRequests": [{"id": "42", "name": "Fix widget rendering", "status": "OPEN", "url": "https://github.com/org/repo/pull/42", "author": {"name": "Alice"}}],
+        }
+
 
 class _ConfigStore:
     def __init__(self, config: AppConfig):
@@ -1413,6 +1420,66 @@ class TempoyApiRecentWorklogsTests(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertEqual(result["days_back"], 14)
+
+
+class TempoyApiDevInfoTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.fake_jira_client = _FakeJiraClient()
+        self.store = _ConfigStore(
+            AppConfig(
+                copilot_api_enabled=True,
+                copilot_api_port=0,
+                copilot_api_mode="read-only",
+                copilot_allowed_projects=[],
+            )
+        )
+        self.server = TempoyApiServer(
+            port=0,
+            policy_service=CopilotPolicyService(config_loader=self.store.load, config_saver=self.store.save),
+            audit_service=CopilotAuditService(log_path=self.temp_dir.name + "/audit.log"),
+            jira_client_factory=lambda: self.fake_jira_client,
+            allocation_service=CopilotAllocationService(
+                config_loader=self.store.load,
+                daily_total_resolver=lambda config: 1800,
+            ),
+        )
+        host, port = self.server.start()
+        self.base_url = f"http://{host}:{port}"
+
+    def tearDown(self) -> None:
+        self.server.stop()
+        self.temp_dir.cleanup()
+
+    def _request(self, method: str, path: str, *, payload=None, headers=None):
+        data = None
+        final_headers = dict(headers or {})
+        if payload is not None:
+            data = json.dumps(payload).encode("utf-8")
+            final_headers.setdefault("Content-Type", "application/json")
+        request = urllib.request.Request(self.base_url + path, data=data, headers=final_headers, method=method)
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+
+    def test_get_issue_dev_info_returns_branches_commits_prs(self) -> None:
+        _, session_payload = self._request("POST", "/session/start", payload={"client_name": "tests"})
+        token = session_payload["token"]
+        status, result = self._request(
+            "GET",
+            "/issues/ABC-1/dev-info",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(result["issue_key"], "ABC-1")
+        self.assertEqual(len(result["branches"]), 1)
+        self.assertEqual(result["branches"][0]["name"], "feature/ABC-1-widget")
+        self.assertEqual(len(result["commits"]), 1)
+        self.assertEqual(result["commits"][0]["id"], "abc123")
+        self.assertEqual(result["commits"][0]["author"], "Alice")
+        self.assertEqual(len(result["pull_requests"]), 1)
+        self.assertEqual(result["pull_requests"][0]["status"], "OPEN")
+        self.assertEqual(result["pull_requests"][0]["name"], "Fix widget rendering")
 
 
 if __name__ == "__main__":

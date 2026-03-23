@@ -72,6 +72,9 @@ class TempoyApiAdapter:
     def get_issue_transitions(self, issue_key: str) -> Dict[str, Any]:
         return self._request("GET", f"/issues/{self._normalize_key(issue_key)}/transitions")
 
+    def get_issue_dev_info(self, issue_key: str) -> Dict[str, Any]:
+        return self._request("GET", f"/issues/{self._normalize_key(issue_key)}/dev-info")
+
     def transition_issue(self, **body: Any) -> Dict[str, Any]:
         return self._request("POST", "/issues/transition", body)
 
@@ -124,6 +127,7 @@ class TempoyApiAdapter:
             "create_ticket": lambda payload: self.create_ticket(**(payload or {})),
             "update_issue_fields": lambda payload: self.update_issue_fields(**(payload or {})),
             "get_issue_transitions": lambda payload: self.get_issue_transitions(str((payload or {}).get("issue_key") or "")),
+            "get_issue_dev_info": lambda payload: self.get_issue_dev_info(str((payload or {}).get("issue_key") or "")),
             "transition_issue": lambda payload: self.transition_issue(**(payload or {})),
             "get_allocation_draft": lambda payload: self.get_allocation_draft(),
             "add_ticket_to_allocation": lambda payload: self.add_ticket_to_allocation(**(payload or {})),

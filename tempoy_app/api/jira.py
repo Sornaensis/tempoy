@@ -666,6 +666,34 @@ class JiraClient:
         data = response.json() or {}
         return data.get("transitions", []) if isinstance(data.get("transitions"), list) else []
 
+    def get_dev_info(self, issue_id: str) -> Dict:
+        """Fetch development information (branches, commits, PRs) for an issue by its numeric ID."""
+        normalized_id = str(issue_id or "").strip()
+        if not normalized_id:
+            raise ValueError("Issue ID is required")
+        result: Dict = {"branches": [], "commits": [], "pullRequests": []}
+        for data_type in ("repository",):
+            response = self.session.get(
+                f"{self.base_url}/rest/dev-status/latest/issue/detail",
+                params={"issueId": normalized_id, "applicationType": "", "dataType": data_type},
+                timeout=30,
+            )
+            response.raise_for_status()
+            data = response.json() or {}
+            for detail in data.get("detail", []):
+                if not isinstance(detail, dict):
+                    continue
+                for branch in detail.get("branches", []):
+                    if isinstance(branch, dict):
+                        result["branches"].append(branch)
+                for commit in detail.get("commits", []):
+                    if isinstance(commit, dict):
+                        result["commits"].append(commit)
+                for pr in detail.get("pullRequests", []):
+                    if isinstance(pr, dict):
+                        result["pullRequests"].append(pr)
+        return result
+
     def transition_issue(self, issue_key: str, transition_id: str) -> None:
         normalized_issue_key = str(issue_key or "").strip().upper()
         if not normalized_issue_key:

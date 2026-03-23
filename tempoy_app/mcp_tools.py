@@ -128,7 +128,17 @@ TOOL_DEFINITIONS: List[McpToolDefinition] = [
     ),
     McpToolDefinition(
         "get_issue_transitions",
-        "Get available status transitions for a Jira issue through Tempoy.",
+        "Get available status transitions for a Jira issue through Tempoy. "
+        "Returns the current status and a list of transitions the issue can move to.",
+        _object_schema(
+            properties={"issue_key": {"type": "string", "description": "Jira issue key, such as ABC-123."}},
+            required=["issue_key"],
+        ),
+    ),
+    McpToolDefinition(
+        "get_issue_dev_info",
+        "Get development information linked to a Jira issue: branches, commits, and pull requests. "
+        "Requires a source control integration (GitHub, Bitbucket, GitLab, etc.) connected to the Jira instance.",
         _object_schema(
             properties={"issue_key": {"type": "string", "description": "Jira issue key, such as ABC-123."}},
             required=["issue_key"],

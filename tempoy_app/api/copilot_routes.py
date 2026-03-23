@@ -384,6 +384,61 @@ class CopilotRoutes:
             "transitions": transitions,
         }
 
+    def get_issue_dev_info(self, issue_key: str, *, token: Optional[str]) -> Dict[str, object]:
+        self._policy_service.require_session_token(token)
+        normalized_issue_key = str(issue_key or "").strip().upper()
+        if not normalized_issue_key:
+            raise ValueError("Issue key is required")
+        jira_client = self._jira_client_factory()
+        issue = jira_client.get_issue(normalized_issue_key)
+        project_key = str(((issue.get("fields") or {}).get("project") or {}).get("key") or "").upper()
+        if not self._policy_service.is_project_allowed(project_key):
+            raise CopilotPolicyError("Project is not allowed")
+        issue_id = str(issue.get("id") or "")
+        if not issue_id:
+            raise RuntimeError("Could not determine issue ID")
+        raw = jira_client.get_dev_info(issue_id)
+        branches = [
+            {"name": str(b.get("name") or ""), "url": str(b.get("url") or "")}
+            for b in raw.get("branches", []) if b.get("name")
+        ]
+        commits = [
+            {
+                "id": str(c.get("id") or ""),
+                "message": str(c.get("message") or ""),
+                "author": str((c.get("author") or {}).get("name") or ""),
+                "url": str(c.get("url") or ""),
+            }
+            for c in raw.get("commits", []) if c.get("id")
+        ]
+        pull_requests = [
+            {
+                "id": str(pr.get("id") or ""),
+                "name": str(pr.get("name") or ""),
+                "status": str(pr.get("status") or ""),
+                "url": str(pr.get("url") or ""),
+                "author": str((pr.get("author") or {}).get("name") or ""),
+            }
+            for pr in raw.get("pullRequests", []) if pr.get("id")
+        ]
+        self._audit_service.log_event(
+            operation="issues.dev-info.get",
+            success=True,
+            category="read",
+            detail={
+                "issue_key": normalized_issue_key,
+                "branches": len(branches),
+                "commits": len(commits),
+                "pull_requests": len(pull_requests),
+            },
+        )
+        return {
+            "issue_key": normalized_issue_key,
+            "branches": branches,
+            "commits": commits,
+            "pull_requests": pull_requests,
+        }
+
     def transition_issue(self, body: Dict[str, Any], *, token: Optional[str]) -> Dict[str, object]:
         normalized_issue_key = str(body.get("issue_key") or "").strip().upper()
         if not normalized_issue_key:
