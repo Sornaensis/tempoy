@@ -123,16 +123,22 @@ class JiraClient:
     def get_field_options(self, field_id: str, *, max_options: int = 200) -> List[str]:
         """Fetch the allowed option values for a custom select field.
 
-        Uses the issue create metadata (which works for regular users)
-        to discover the allowedValues for the field.  Returns a list of
-        option value strings, or an empty list if the field has no
-        discoverable options.
+        Tries three approaches:
+        1. Create metadata for a project (works for standard select fields)
+        2. Edit metadata for a recent issue (works for fields that expose
+           allowedValues only in edit context)
+        3. Scan existing issues to collect distinct values that have been
+           set for the field (works for team fields and any other type
+           where Jira doesn't expose allowedValues in metadata)
+
+        Returns a list of option value strings, or an empty list if the
+        field has no discoverable options.
         """
         normalized = str(field_id or "").strip()
         if not normalized:
             return []
 
-        # Get a project to pull create metadata from
+        # Get a project to pull metadata from
         try:
             projects = self.get_projects(max_results=1)
         except Exception as exc:
@@ -146,49 +152,180 @@ class JiraClient:
         if not project_key:
             return []
 
-        logger.info("get_field_options(%s): fetching create schema for project %s", normalized, project_key)
+        # Approach 1: create metadata
+        logger.info("get_field_options(%s): trying create schema for project %s", normalized, project_key)
+        options = self._options_from_create_schema(normalized, project_key)
+        if options:
+            return options[:max_options]
 
-        # Get create schema — iterate issue types until we find the field
+        # Approach 2: edit metadata from a recent issue
+        logger.info("get_field_options(%s): trying edit metadata fallback", normalized)
+        options = self._options_from_edit_meta(normalized, project_key)
+        if options:
+            return options[:max_options]
+
+        # Approach 3: scan existing issue values
+        logger.info("get_field_options(%s): trying issue scan fallback", normalized)
+        options = self._options_from_issue_scan(normalized)
+        if options:
+            return options[:max_options]
+
+        logger.info("get_field_options(%s): no allowed values found via any method", normalized)
+        return []
+
+    def _options_from_create_schema(self, field_id: str, project_key: str) -> List[str]:
         try:
             schemas = self.get_create_schema(project_key)
         except Exception as exc:
-            logger.warning("get_field_options(%s): failed to fetch create schema: %s", normalized, exc)
+            logger.warning("get_field_options(%s): failed to fetch create schema: %s", field_id, exc)
             return []
 
-        logger.info("get_field_options(%s): got %d issue type schemas", normalized, len(schemas))
+        logger.info("get_field_options(%s): got %d issue type schemas", field_id, len(schemas))
 
         for schema in schemas:
             fields = schema.get("fields")
             if not isinstance(fields, dict):
                 continue
-            field_meta = fields.get(normalized)
+            field_meta = fields.get(field_id)
             if not field_meta:
                 continue
-            allowed = field_meta.get("allowedValues")
-            if not isinstance(allowed, list):
-                logger.info(
-                    "get_field_options(%s): field found in issue type %s but no allowedValues",
-                    normalized, schema.get("name", "?"),
-                )
-                continue
-            options: List[str] = []
-            for opt in allowed:
-                if isinstance(opt, dict):
-                    val = str(opt.get("value") or opt.get("name") or "").strip()
-                elif isinstance(opt, str):
-                    val = opt.strip()
-                else:
-                    continue
-                if val:
-                    options.append(val)
+            options = self._extract_allowed_values(field_meta)
             if options:
                 logger.info(
-                    "get_field_options(%s): found %d allowed values in issue type %s",
-                    normalized, len(options), schema.get("name", "?"),
+                    "get_field_options(%s): found %d allowed values in create schema (issue type %s)",
+                    field_id, len(options), schema.get("name", "?"),
                 )
-                return options[:max_options]
+                return options
+            else:
+                logger.info(
+                    "get_field_options(%s): field found in issue type %s but no usable allowedValues",
+                    field_id, schema.get("name", "?"),
+                )
+        return []
 
-        logger.info("get_field_options(%s): field not found in any issue type schema", normalized)
+    def _options_from_edit_meta(self, field_id: str, project_key: str) -> List[str]:
+        # Find a recent issue in the project
+        try:
+            issues = self._search_jql(
+                jql=f'project = "{project_key}" ORDER BY updated DESC',
+                max_results=1,
+                fields=["summary"],
+            )
+        except Exception as exc:
+            logger.warning("get_field_options(%s): failed to search for issue: %s", field_id, exc)
+            return []
+
+        if not issues:
+            logger.info("get_field_options(%s): no issues found in project %s", field_id, project_key)
+            return []
+
+        issue_key = str(issues[0].get("key") or "").strip()
+        if not issue_key:
+            return []
+
+        logger.info("get_field_options(%s): fetching edit metadata for %s", field_id, issue_key)
+
+        try:
+            edit_meta = self.get_edit_schema(issue_key)
+        except Exception as exc:
+            logger.warning("get_field_options(%s): failed to fetch edit metadata: %s", field_id, exc)
+            return []
+
+        fields = edit_meta.get("fields")
+        if not isinstance(fields, dict):
+            return []
+
+        field_meta = fields.get(field_id)
+        if not field_meta:
+            logger.info("get_field_options(%s): field not in edit metadata for %s", field_id, issue_key)
+            return []
+
+        options = self._extract_allowed_values(field_meta)
+        if options:
+            logger.info(
+                "get_field_options(%s): found %d allowed values via edit metadata for %s",
+                field_id, len(options), issue_key,
+            )
+        else:
+            logger.info(
+                "get_field_options(%s): field in edit metadata for %s but no usable allowedValues (keys: %s)",
+                field_id, issue_key, list(field_meta.keys()),
+            )
+        return options
+
+    @staticmethod
+    def _extract_allowed_values(field_meta: Dict) -> List[str]:
+        allowed = field_meta.get("allowedValues")
+        if not isinstance(allowed, list):
+            return []
+        options: List[str] = []
+        for opt in allowed:
+            if isinstance(opt, dict):
+                val = str(opt.get("value") or opt.get("name") or opt.get("title") or "").strip()
+            elif isinstance(opt, str):
+                val = opt.strip()
+            else:
+                continue
+            if val:
+                options.append(val)
+        return options
+
+    def _options_from_issue_scan(self, field_id: str, *, scan_limit: int = 100) -> List[str]:
+        """Collect distinct values for a field by scanning recent issues."""
+        try:
+            issues = self._search_jql(
+                jql=f'"{field_id}" is not EMPTY ORDER BY updated DESC',
+                max_results=scan_limit,
+                fields=[field_id],
+            )
+        except Exception as exc:
+            logger.warning("get_field_options(%s): issue scan query failed: %s", field_id, exc)
+            return []
+
+        logger.info("get_field_options(%s): issue scan returned %d issues", field_id, len(issues))
+
+        seen: set = set()
+        options: List[str] = []
+        for issue in issues:
+            fields_data = issue.get("fields") or {}
+            raw_value = fields_data.get(field_id)
+            for val in self._extract_field_display_values(raw_value):
+                if val not in seen:
+                    seen.add(val)
+                    options.append(val)
+
+        if options:
+            logger.info(
+                "get_field_options(%s): found %d distinct values from issue scan",
+                field_id, len(options),
+            )
+        return options
+
+    @staticmethod
+    def _extract_field_display_values(raw_value: object) -> List[str]:
+        """Extract display-friendly string value(s) from a Jira field value."""
+        if raw_value is None:
+            return []
+        if isinstance(raw_value, str):
+            val = raw_value.strip()
+            return [val] if val else []
+        if isinstance(raw_value, (int, float)):
+            return [str(raw_value)]
+        if isinstance(raw_value, dict):
+            # Team, user, option, priority etc. — try common display keys
+            val = str(
+                raw_value.get("value")
+                or raw_value.get("name")
+                or raw_value.get("title")
+                or raw_value.get("displayName")
+                or ""
+            ).strip()
+            return [val] if val else []
+        if isinstance(raw_value, list):
+            results: List[str] = []
+            for item in raw_value:
+                results.extend(JiraClient._extract_field_display_values(item))
+            return results
         return []
 
     def get_projects(self, *, max_results: int = 100) -> List[Dict]:
