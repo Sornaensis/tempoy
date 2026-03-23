@@ -41,7 +41,7 @@
     ],
     "mcpServerDefinitionProviders": [
       {
-        "id": "tempoy.mcp-server",
+        "id": "tempoy",
         "label": "Tempoy MCP Server"
       }
     ],

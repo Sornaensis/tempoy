@@ -111,6 +111,17 @@ if [[ "$1" == "uninstall_tempoy" ]]; then
         fi
     fi
 
+    # Remove AI agent files from editors and Claude Code
+    if [[ "$OS" == "macos" ]]; then
+        EDITORS_BASE="$HOME/Library/Application Support"
+    else
+        EDITORS_BASE="$HOME/.config"
+    fi
+    for editor_dir in "Code" "Code - Insiders" "Cursor"; do
+        rm -f "$EDITORS_BASE/$editor_dir/User/prompts/tempoy-"*.agent.md 2>/dev/null || true
+    done
+    rm -f "$HOME/.claude/commands/tempoy-"*.md 2>/dev/null || true
+
     # Remove application files but preserve config
     if [[ -d "$TEMPOY_DIR" ]]; then
         # Backup config if it exists
@@ -124,6 +135,7 @@ if [[ "$1" == "uninstall_tempoy" ]]; then
         rm -f "$TEMPOY_DIR/tempoy.pyw" 2>/dev/null || true
         rm -f "$TEMPOY_DIR/tempoy" 2>/dev/null || true
         rm -rf "$PACKAGE_DIR" 2>/dev/null || true
+        rm -rf "$TEMPOY_DIR/agents" 2>/dev/null || true
         
         # Restore config
         if [[ -f "$CONFIG_FILE.backup" ]]; then
@@ -155,7 +167,7 @@ echo -e "${BLUE}================================================================
 echo
 
 # Step 1: Check Python version
-log_step "[1/8] Checking Python installation..."
+log_step "[1/9] Checking Python installation..."
 
 PYTHON_CMD=""
 for cmd in python3 python; do
@@ -190,13 +202,13 @@ log_success "Python $PYTHON_VERSION found ($PYTHON_CMD)"
 
 # Step 2: Create Tempoy directory
 echo
-log_step "[2/8] Creating Tempoy directory..."
+log_step "[2/9] Creating Tempoy directory..."
 mkdir -p "$TEMPOY_DIR"
 log_success "Directory created: $TEMPOY_DIR"
 
 # Step 3: Create virtual environment
 echo
-log_step "[3/8] Creating virtual environment..."
+log_step "[3/9] Creating virtual environment..."
 if [[ -d "$VENV_DIR" ]]; then
     log_warning "Virtual environment already exists. Recreating..."
     rm -rf "$VENV_DIR"
@@ -207,7 +219,7 @@ log_success "Virtual environment created"
 
 # Step 4: Install dependencies
 echo
-log_step "[4/8] Installing dependencies..."
+log_step "[4/9] Installing dependencies..."
 source "$VENV_DIR/bin/activate"
 
 # Upgrade pip first
@@ -219,7 +231,7 @@ log_success "Dependencies installed (PySide6, requests, mcp)"
 
 # Step 5: Copy Tempoy application payload
 echo
-log_step "[5/8] Installing Tempoy application..."
+log_step "[5/9] Installing Tempoy application..."
 if [[ ! -f "$SCRIPT_DIR/tempoy.py" ]]; then
     log_error "tempoy.py not found in $SCRIPT_DIR"
     exit 1
@@ -243,7 +255,7 @@ log_success "Tempoy application payload installed"
 
 # Step 6: Create launcher script
 echo
-log_step "[6/8] Creating launcher script..."
+log_step "[6/9] Creating launcher script..."
 
 # Create shell launcher script
 cat > "$TEMPOY_DIR/tempoy" << 'EOF'
@@ -263,7 +275,7 @@ log_success "Launcher script created"
 
 # Step 7: System integration
 echo
-log_step "[7/8] Setting up system integration..."
+log_step "[7/9] Setting up system integration..."
 
 # Add to PATH by updating shell profiles
 PATH_ADDED=false
@@ -367,9 +379,50 @@ fi
 
 log_success "System integration completed"
 
-# Step 8: Test installation
+# Step 8: Install AI agents for GitHub Copilot and Claude Code
 echo
-log_step "[8/8] Testing installation..."
+log_step "[8/9] Installing AI agents..."
+
+if [[ -d "$SCRIPT_DIR/agents" ]]; then
+    # Copy agents to install directory
+    rm -rf "$TEMPOY_DIR/agents" 2>/dev/null || true
+    cp -R "$SCRIPT_DIR/agents" "$TEMPOY_DIR/agents"
+
+    # Deploy Copilot agents to VS Code-compatible editors
+    if [[ "$OS" == "macos" ]]; then
+        EDITORS_BASE="$HOME/Library/Application Support"
+    else
+        EDITORS_BASE="$HOME/.config"
+    fi
+
+    COPILOT_INSTALLED=false
+    for editor_dir in "Code" "Code - Insiders" "Cursor"; do
+        editor_prompts="$EDITORS_BASE/$editor_dir/User/prompts"
+        if [[ -d "$EDITORS_BASE/$editor_dir/User" ]]; then
+            mkdir -p "$editor_prompts"
+            cp "$TEMPOY_DIR/agents/copilot/"*.agent.md "$editor_prompts/" 2>/dev/null || true
+            COPILOT_INSTALLED=true
+        fi
+    done
+
+    if [[ "$COPILOT_INSTALLED" == true ]]; then
+        log_success "Copilot agents installed"
+    else
+        log_warning "No VS Code installation detected — Copilot agents saved to $TEMPOY_DIR/agents/copilot"
+    fi
+
+    # Deploy Claude Code commands
+    CLAUDE_COMMANDS_DIR="$HOME/.claude/commands"
+    mkdir -p "$CLAUDE_COMMANDS_DIR"
+    cp "$TEMPOY_DIR/agents/claude/"*.md "$CLAUDE_COMMANDS_DIR/" 2>/dev/null || true
+    log_success "Claude Code commands installed"
+else
+    log_warning "Agents directory not found in source — skipping agent install"
+fi
+
+# Step 9: Test installation
+echo
+log_step "[9/9] Testing installation..."
 
 cd "$TEMPOY_DIR"
 source venv/bin/activate

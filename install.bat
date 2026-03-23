@@ -41,7 +41,7 @@ if %errorLevel% == 0 (
 echo.
 
 :: Step 1: Check Python version
-echo %COLOR_BLUE%[1/8] Checking Python installation...%COLOR_RESET%
+echo %COLOR_BLUE%[1/9] Checking Python installation...%COLOR_RESET%
 python --version >nul 2>&1
 if %errorlevel% neq 0 (
     echo %COLOR_RED%ERROR: Python is not installed or not in PATH.%COLOR_RESET%
@@ -73,7 +73,7 @@ echo %COLOR_GREEN%✓ Python %PYTHON_VERSION% found%COLOR_RESET%
 
 :: Step 2: Create Tempoy directory
 echo.
-echo %COLOR_BLUE%[2/8] Creating Tempoy directory...%COLOR_RESET%
+echo %COLOR_BLUE%[2/9] Creating Tempoy directory...%COLOR_RESET%
 if not exist "%TEMPOY_DIR%" (
     mkdir "%TEMPOY_DIR%" 2>nul
     if !errorlevel! neq 0 (
@@ -86,7 +86,7 @@ echo %COLOR_GREEN%✓ Directory created: %TEMPOY_DIR%%COLOR_RESET%
 
 :: Step 3: Create virtual environment
 echo.
-echo %COLOR_BLUE%[3/8] Creating virtual environment...%COLOR_RESET%
+echo %COLOR_BLUE%[3/9] Creating virtual environment...%COLOR_RESET%
 if exist "%VENV_DIR%" (
     echo %COLOR_YELLOW%Virtual environment already exists. Recreating...%COLOR_RESET%
     rmdir /s /q "%VENV_DIR%" 2>nul
@@ -102,7 +102,7 @@ echo %COLOR_GREEN%✓ Virtual environment created%COLOR_RESET%
 
 :: Step 4: Activate virtual environment and install dependencies
 echo.
-echo %COLOR_BLUE%[4/8] Installing dependencies...%COLOR_RESET%
+echo %COLOR_BLUE%[4/9] Installing dependencies...%COLOR_RESET%
 call "%VENV_DIR%\Scripts\activate.bat"
 if %errorlevel% neq 0 (
     echo %COLOR_RED%ERROR: Failed to activate virtual environment%COLOR_RESET%
@@ -124,7 +124,7 @@ echo %COLOR_GREEN%✓ Dependencies installed (PySide6, requests, mcp)%COLOR_RESE
 
 :: Step 5: Copy Tempoy application payload
 echo.
-echo %COLOR_BLUE%[5/8] Installing Tempoy application...%COLOR_RESET%
+echo %COLOR_BLUE%[5/9] Installing Tempoy application...%COLOR_RESET%
 if not exist "%SCRIPT_DIR%tempoy.py" (
     echo %COLOR_RED%ERROR: tempoy.py not found in %SCRIPT_DIR%%COLOR_RESET%
     pause
@@ -166,7 +166,7 @@ echo %COLOR_GREEN%✓ Tempoy application payload installed%COLOR_RESET%
 
 :: Step 6: Create launcher VBScript (runs without console window)
 echo.
-echo %COLOR_BLUE%[6/8] Creating launcher script...%COLOR_RESET%
+echo %COLOR_BLUE%[6/9] Creating launcher script...%COLOR_RESET%
 
 :: Create VBS launcher that runs Python without console window
 echo Set objShell = CreateObject("WScript.Shell") > "%TEMPOY_DIR%\tempoy.vbs"
@@ -186,7 +186,7 @@ echo %COLOR_GREEN%✓ Launcher scripts created%COLOR_RESET%
 
 :: Step 7: Add to PATH / Create shortcuts
 echo.
-echo %COLOR_BLUE%[7/8] Setting up system integration...%COLOR_RESET%
+echo %COLOR_BLUE%[7/9] Setting up system integration...%COLOR_RESET%
 
 :: Check if we can modify system PATH (requires admin) or user PATH
 set "PATH_TARGET=USER"
@@ -212,9 +212,42 @@ powershell -Command "& {$WshShell = New-Object -comObject WScript.Shell; $Shortc
 
 echo %COLOR_GREEN%✓ System integration completed%COLOR_RESET%
 
-:: Step 8: Test installation
+:: Step 8: Install AI agents for GitHub Copilot and Claude Code
 echo.
-echo %COLOR_BLUE%[8/8] Testing installation...%COLOR_RESET%
+echo %COLOR_BLUE%[8/9] Installing AI agents...%COLOR_RESET%
+
+:: Copy agents to install directory
+if exist "%SCRIPT_DIR%agents" (
+    if exist "%TEMPOY_DIR%\agents" rmdir /s /q "%TEMPOY_DIR%\agents" >nul 2>&1
+    xcopy "%SCRIPT_DIR%agents" "%TEMPOY_DIR%\agents\" /E /I /Y /Q >nul 2>&1
+
+    :: Deploy Copilot agents to VS Code user prompts directory
+    set "COPILOT_INSTALLED=0"
+    for %%D in ("Code" "Code - Insiders" "Cursor") do (
+        if exist "%APPDATA%\%%~D\User" (
+            if not exist "%APPDATA%\%%~D\User\prompts" mkdir "%APPDATA%\%%~D\User\prompts" 2>nul
+            copy "%TEMPOY_DIR%\agents\copilot\*.agent.md" "%APPDATA%\%%~D\User\prompts\" /Y >nul 2>&1
+            set "COPILOT_INSTALLED=1"
+        )
+    )
+    if "!COPILOT_INSTALLED!"=="1" (
+        echo %COLOR_GREEN%✓ Copilot agents installed%COLOR_RESET%
+    ) else (
+        echo %COLOR_YELLOW%  No VS Code installation detected — Copilot agents saved to %TEMPOY_DIR%\agents\copilot%COLOR_RESET%
+    )
+
+    :: Deploy Claude Code commands
+    set "CLAUDE_DIR=%USERPROFILE%\.claude"
+    if not exist "!CLAUDE_DIR!\commands" mkdir "!CLAUDE_DIR!\commands" 2>nul
+    copy "%TEMPOY_DIR%\agents\claude\*.md" "!CLAUDE_DIR!\commands\" /Y >nul 2>&1
+    echo %COLOR_GREEN%✓ Claude Code commands installed%COLOR_RESET%
+) else (
+    echo %COLOR_YELLOW%  Agents directory not found in source — skipping agent install%COLOR_RESET%
+)
+
+:: Step 9: Test installation
+echo.
+echo %COLOR_BLUE%[9/9] Testing installation...%COLOR_RESET%
 
 :: Test by running with --version flag (if supported, otherwise just check if it starts)
 cd /d "%TEMPOY_DIR%"
@@ -298,6 +331,12 @@ if %errorLevel% == 0 (
 del "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Tempoy.lnk" 2>nul
 del "%PROGRAMDATA%\Microsoft\Windows\Start Menu\Programs\Tempoy.lnk" 2>nul
 
+:: Remove AI agent files
+for %%D in ("Code" "Code - Insiders" "Cursor") do (
+    del "%APPDATA%\%%~D\User\prompts\tempoy-*.agent.md" 2>nul
+)
+del "%USERPROFILE%\.claude\commands\tempoy-*.md" 2>nul
+
 :: Remove application files but preserve config
 if exist "%TEMPOY_DIR%" (
     :: Backup config if it exists
@@ -312,6 +351,7 @@ if exist "%TEMPOY_DIR%" (
     del "%TEMPOY_DIR%\tempoy.vbs" 2>nul
     del "%TEMPOY_DIR%\tempoy.bat" 2>nul
     if exist "%PACKAGE_DIR%" rmdir /s /q "%PACKAGE_DIR%" 2>nul
+    if exist "%TEMPOY_DIR%\agents" rmdir /s /q "%TEMPOY_DIR%\agents" 2>nul
     
     :: Restore config
     if exist "%CONFIG_FILE%.backup" (

@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { buildMcpEnvironment, getExtensionConfig } from './config';
 
 export function registerTempoyMcpProvider(context: vscode.ExtensionContext): vscode.Disposable {
-  return vscode.lm.registerMcpServerDefinitionProvider('tempoy.mcp-server', {
+  return vscode.lm.registerMcpServerDefinitionProvider('tempoy', {
     provideMcpServerDefinitions: async () => {
       const config = getExtensionConfig(context);
       return [
