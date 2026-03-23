@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Outer frame/caps -->
+  <rect x="12" y="4" width="40" height="5" rx="2" fill="#5B86E5"/>
+  <rect x="12" y="55" width="40" height="5" rx="2" fill="#5B86E5"/>
+  <!-- Glass body -->
+  <path d="M16 9 L16 22 Q16 32 32 32 Q48 32 48 22 L48 9 Z" fill="#E8F0FE" stroke="#5B86E5" stroke-width="1.5"/>
+  <path d="M16 55 L16 42 Q16 32 32 32 Q48 32 48 42 L48 55 Z" fill="#E8F0FE" stroke="#5B86E5" stroke-width="1.5"/>
+  <!-- Sand in top -->
+  <path d="M20 9 L20 19 Q20 28 32 28 Q44 28 44 19 L44 9 Z" fill="#F6C85F" opacity="0.7"/>
+  <!-- Sand in bottom -->
+  <path d="M20 55 L20 47 Q20 38 32 38 Q44 38 44 47 L44 55 Z" fill="#F6C85F"/>
+  <!-- Falling sand stream -->
+  <rect x="30.5" y="28" width="3" height="10" rx="1.5" fill="#F6C85F" opacity="0.8"/>
+  <!-- Tiny sparkle details -->
+  <circle cx="26" cy="14" r="1.2" fill="white" opacity="0.6"/>
+  <circle cx="36" cy="50" r="1.2" fill="white" opacity="0.4"/>
+</svg>

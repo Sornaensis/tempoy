@@ -283,11 +283,12 @@ class Floater(QtWidgets.QMainWindow):
         v.addWidget(self.main_splitter, 1)
         self.setCentralWidget(central)
 
-        # Tray icon + menu with fallback icon
-        tray_icon = QtGui.QIcon.fromTheme("alarm", QtGui.QIcon())
-        if tray_icon.isNull():
-            tray_icon = self.style().standardIcon(QtWidgets.QStyle.SP_ComputerIcon)
-        self.tray = QtWidgets.QSystemTrayIcon(tray_icon)
+        # App / tray icon
+        app_icon = _load_app_icon()
+        if app_icon.isNull():
+            app_icon = self.style().standardIcon(QtWidgets.QStyle.SP_ComputerIcon)
+        self.setWindowIcon(app_icon)
+        self.tray = QtWidgets.QSystemTrayIcon(app_icon)
         self.tray.setToolTip(APP_NAME)
         menu = QtWidgets.QMenu()
         act_show = menu.addAction("Show / Hide")
@@ -2451,15 +2452,46 @@ class Floater(QtWidgets.QMainWindow):
         return format_relative_time(date_str)
 
 
+def _load_app_icon() -> QtGui.QIcon:
+    """Load the hourglass app icon, rendering the SVG to multiple raster sizes."""
+    svg_path = os.path.join(os.path.dirname(__file__), "..", "assets", "hourglass.svg")
+    try:
+        from PySide6.QtSvg import QSvgRenderer
+        renderer = QSvgRenderer(svg_path)
+        if not renderer.isValid():
+            return QtGui.QIcon(svg_path)
+        icon = QtGui.QIcon()
+        for size in (16, 24, 32, 48, 64, 128, 256):
+            img = QtGui.QImage(QtCore.QSize(size, size), QtGui.QImage.Format_ARGB32)
+            img.fill(QtCore.Qt.transparent)
+            painter = QtGui.QPainter(img)
+            renderer.render(painter)
+            painter.end()
+            icon.addPixmap(QtGui.QPixmap.fromImage(img))
+        return icon
+    except Exception:
+        return QtGui.QIcon(svg_path)
+
+
 def main():
     log_path = configure_logging()
     audit_log("Starting Tempoy application")
 
+    # On Windows, set AppUserModelID so the taskbar uses our icon instead of Python's
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("tempoy.app")
+        except Exception:
+            pass
+
     app = QtWidgets.QApplication(sys.argv)
     # Note: Using default behavior - app closes when last window is closed
 
-        # App icon fallback
     app.setApplicationName(APP_NAME)
+    _app_icon = _load_app_icon()
+    if not _app_icon.isNull():
+        app.setWindowIcon(_app_icon)
     
     # On Windows, set additional Qt attributes to prevent console issues
     if sys.platform == "win32":
@@ -2467,7 +2499,6 @@ def main():
             # Prevent Qt from trying to allocate console
             app.setAttribute(QtCore.Qt.AA_DisableWindowContextHelpButton, True)
             # Make sure Qt doesn't try to show console on errors
-            import os
             os.environ['QT_LOGGING_RULES'] = '*.debug=false'
         except:
             pass
