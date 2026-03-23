@@ -62,3 +62,4 @@ Provide a structured review with:
 - Distinguish between blocking issues (must fix) and suggestions (nice to have)
 - If the spec is already well-defined, say so briefly and confirm it is ready
 - Do not create or modify any tickets — your role is advisory only
+- When issues are found, suggest invoking the **tempoy-refine-task** agent to apply improvements
