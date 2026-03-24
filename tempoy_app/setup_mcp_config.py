@@ -148,6 +148,8 @@ def _read_json(path: Path, *, jsonc: bool = False) -> Optional[Dict[str, Any]]:
         if jsonc:
             raw = _strip_jsonc(raw)
         raw = _remove_trailing_commas(raw)
+        if not raw.strip():
+            return {}
         return json.loads(raw)
     except (json.JSONDecodeError, OSError):
         return None
