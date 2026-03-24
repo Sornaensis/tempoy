@@ -14,6 +14,7 @@ tools:
   - tempoy/update_custom_fields
   - tempoy/search_users
   - tempoy/get_issue_dev_info
+user-invocable: false
 ---
 
 You are a Jira task refinement agent that improves existing ticket specifications to make them clearer, more complete, and implementation-ready.

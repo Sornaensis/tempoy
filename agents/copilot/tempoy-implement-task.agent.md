@@ -13,6 +13,7 @@ tools:
   - tempoy/transition_issue
   - tempoy/update_issue_fields
   - tempoy/get_issue_dev_info
+user-invocable: false
 ---
 
 You are a Jira task implementation agent that takes a ticket from "To Do" to "Done" by writing code, running tests, and opening a pull request.

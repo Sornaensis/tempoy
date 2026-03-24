@@ -16,6 +16,7 @@ tools:
   - tempoy/search_users
   - tempoy/discover_custom_fields
   - tempoy/update_custom_fields
+user-invocable: false
 ---
 
 You are a Jira task planning agent that helps users scope and create well-defined Jira tickets through Tempoy.
