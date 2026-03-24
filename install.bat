@@ -59,21 +59,32 @@ if "!FOUND_ANY!"=="1" (
     )
 
     :: Kill Tempoy GUI (pythonw.exe running tempoy.pyw or tempoy.py)
-    for /f "tokens=2" %%P in ('wmic process where "name='pythonw.exe' AND commandline LIKE '%%tempoy%%'" get processid 2^>nul ^| findstr /r "[0-9]"') do (
+    for /f "tokens=1" %%P in ('wmic process where "name='pythonw.exe' AND commandline LIKE '%%tempoy%%'" get processid 2^>nul ^| findstr /r "[0-9]"') do (
         taskkill /pid %%P /f >nul 2>&1
     )
-    for /f "tokens=2" %%P in ('wmic process where "name='python.exe' AND commandline LIKE '%%tempoy%%'" get processid 2^>nul ^| findstr /r "[0-9]"') do (
+    for /f "tokens=1" %%P in ('wmic process where "name='python.exe' AND commandline LIKE '%%tempoy%%'" get processid 2^>nul ^| findstr /r "[0-9]"') do (
         taskkill /pid %%P /f >nul 2>&1
     )
 
     :: Kill any wscript.exe running tempoy VBS launchers
-    for /f "tokens=2" %%P in ('wmic process where "name='wscript.exe' AND commandline LIKE '%%tempoy%%'" get processid 2^>nul ^| findstr /r "[0-9]"') do (
+    for /f "tokens=1" %%P in ('wmic process where "name='wscript.exe' AND commandline LIKE '%%tempoy%%'" get processid 2^>nul ^| findstr /r "[0-9]"') do (
         taskkill /pid %%P /f >nul 2>&1
     )
 
     echo %COLOR_GREEN%✓ Stopped running Tempoy processes%COLOR_RESET%
     :: Brief pause to let processes fully terminate and release file locks
     "%SystemRoot%\System32\timeout.exe" /t 2 /nobreak >nul
+
+    :: Verify all Tempoy processes were terminated
+    set "STILL_RUNNING=0"
+    wmic process where "name='pythonw.exe' AND commandline LIKE '%%tempoy%%'" get processid 2>nul | findstr /r "[0-9]" >nul 2>&1 && set "STILL_RUNNING=1"
+    if "!STILL_RUNNING!"=="0" wmic process where "name='python.exe' AND commandline LIKE '%%tempoy%%'" get processid 2>nul | findstr /r "[0-9]" >nul 2>&1 && set "STILL_RUNNING=1"
+    if "!STILL_RUNNING!"=="0" wmic process where "name='wscript.exe' AND commandline LIKE '%%tempoy%%'" get processid 2>nul | findstr /r "[0-9]" >nul 2>&1 && set "STILL_RUNNING=1"
+    if "!STILL_RUNNING!"=="1" (
+        echo %COLOR_RED%ERROR: Failed to stop all Tempoy processes. Please close Tempoy manually and try again.%COLOR_RESET%
+        pause
+        exit /b 1
+    )
 ) else (
     echo %COLOR_GREEN%✓ No running Tempoy processes found%COLOR_RESET%
 )
@@ -373,16 +384,27 @@ echo.
 echo %COLOR_BLUE%Stopping running Tempoy processes...%COLOR_RESET%
 
 :: Kill all Tempoy processes before uninstall
-for /f "tokens=2" %%P in ('wmic process where "name='pythonw.exe' AND commandline LIKE '%%tempoy%%'" get processid 2^>nul ^| findstr /r "[0-9]"') do (
+for /f "tokens=1" %%P in ('wmic process where "name='pythonw.exe' AND commandline LIKE '%%tempoy%%'" get processid 2^>nul ^| findstr /r "[0-9]"') do (
     taskkill /pid %%P /f >nul 2>&1
 )
-for /f "tokens=2" %%P in ('wmic process where "name='python.exe' AND commandline LIKE '%%tempoy%%'" get processid 2^>nul ^| findstr /r "[0-9]"') do (
+for /f "tokens=1" %%P in ('wmic process where "name='python.exe' AND commandline LIKE '%%tempoy%%'" get processid 2^>nul ^| findstr /r "[0-9]"') do (
     taskkill /pid %%P /f >nul 2>&1
 )
-for /f "tokens=2" %%P in ('wmic process where "name='wscript.exe' AND commandline LIKE '%%tempoy%%'" get processid 2^>nul ^| findstr /r "[0-9]"') do (
+for /f "tokens=1" %%P in ('wmic process where "name='wscript.exe' AND commandline LIKE '%%tempoy%%'" get processid 2^>nul ^| findstr /r "[0-9]"') do (
     taskkill /pid %%P /f >nul 2>&1
 )
 "%SystemRoot%\System32\timeout.exe" /t 2 /nobreak >nul
+
+:: Verify all Tempoy processes were terminated
+set "STILL_RUNNING=0"
+wmic process where "name='pythonw.exe' AND commandline LIKE '%%tempoy%%'" get processid 2>nul | findstr /r "[0-9]" >nul 2>&1 && set "STILL_RUNNING=1"
+if "!STILL_RUNNING!"=="0" wmic process where "name='python.exe' AND commandline LIKE '%%tempoy%%'" get processid 2>nul | findstr /r "[0-9]" >nul 2>&1 && set "STILL_RUNNING=1"
+if "!STILL_RUNNING!"=="0" wmic process where "name='wscript.exe' AND commandline LIKE '%%tempoy%%'" get processid 2>nul | findstr /r "[0-9]" >nul 2>&1 && set "STILL_RUNNING=1"
+if "!STILL_RUNNING!"=="1" (
+    echo %COLOR_RED%ERROR: Failed to stop all Tempoy processes. Please close Tempoy manually and try again.%COLOR_RESET%
+    pause
+    exit /b 1
+)
 echo %COLOR_GREEN%✓ Processes stopped%COLOR_RESET%
 
 echo.
