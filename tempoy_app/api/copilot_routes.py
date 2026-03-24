@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from tempoy_app.config import CustomFieldsConfig
+from tempoy_app.formatting import markdown_to_adf
 from tempoy_app.services.copilot_audit_service import CopilotAuditService
 from tempoy_app.services.copilot_allocation_service import CopilotAllocationService
 from tempoy_app.services.copilot_policy_service import CopilotPolicyError, CopilotPolicyService
@@ -868,15 +869,7 @@ class CopilotRoutes:
 
     @staticmethod
     def _to_adf_document(text: str) -> Dict[str, object]:
-        paragraphs = [line.strip() for line in str(text or "").splitlines()]
-        content = []
-        for paragraph in paragraphs:
-            if not paragraph:
-                continue
-            content.append({"type": "paragraph", "content": [{"type": "text", "text": paragraph}]})
-        if not content:
-            content = [{"type": "paragraph", "content": []}]
-        return {"type": "doc", "version": 1, "content": content}
+        return markdown_to_adf(text)
 
     def discover_custom_fields(self, *, token: Optional[str]) -> Dict[str, object]:
         self._policy_service.require_session_token(token)
