@@ -78,6 +78,21 @@ if [[ "$1" == "uninstall_tempoy" ]]; then
     fi
 
     echo
+    log_step "Stopping running Tempoy processes..."
+
+    # Kill Python processes running tempoy
+    for pid in $(pgrep -f 'python.*tempoy' 2>/dev/null); do
+        if [[ "$pid" != "$$" ]]; then
+            kill "$pid" 2>/dev/null || true
+        fi
+    done
+    for pid in $(pgrep -f 'tempoy_app\.mcp_server' 2>/dev/null); do
+        kill "$pid" 2>/dev/null || true
+    done
+    sleep 2
+    log_success "Processes stopped"
+
+    echo
     log_step "Removing Tempoy installation..."
 
     # Remove from PATH in shell profiles
@@ -165,6 +180,36 @@ echo -e "${BLUE}                     Tempoy Installation                        
 echo -e "${BLUE}                         ($OS_NAME)                             ${RESET}"
 echo -e "${BLUE}================================================================${RESET}"
 echo
+
+# Step 0: Stop any running Tempoy processes
+log_step "[0/9] Checking for running Tempoy processes..."
+FOUND_PIDS=""
+
+# Detect running Tempoy processes (exclude ourselves)
+for pid in $(pgrep -f 'python.*tempoy' 2>/dev/null); do
+    [[ "$pid" != "$$" ]] && FOUND_PIDS="$FOUND_PIDS $pid"
+done
+for pid in $(pgrep -f 'tempoy_app\.mcp_server' 2>/dev/null); do
+    FOUND_PIDS="$FOUND_PIDS $pid"
+done
+
+if [[ -n "$FOUND_PIDS" ]]; then
+    echo -e "${YELLOW}Tempoy is currently running. It must be stopped before installation can continue.${RESET}"
+    read -p "Stop all Tempoy processes? (Y/n): " -n 1 -r
+    echo
+    if [[ "$REPLY" =~ ^[Nn]$ ]]; then
+        log_error "Installation cancelled. Please close Tempoy and try again."
+        exit 1
+    fi
+
+    for pid in $FOUND_PIDS; do
+        kill "$pid" 2>/dev/null || true
+    done
+    log_success "Stopped running Tempoy processes"
+    sleep 2
+else
+    log_success "No running Tempoy processes found"
+fi
 
 # Step 1: Check Python version
 log_step "[1/9] Checking Python installation..."

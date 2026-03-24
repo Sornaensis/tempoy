@@ -40,7 +40,46 @@ if %errorLevel% == 0 (
 )
 echo.
 
+:: Step 0: Stop any running Tempoy processes
+echo %COLOR_BLUE%[0/9] Checking for running Tempoy processes...%COLOR_RESET%
+set "FOUND_ANY=0"
+
+:: Detect running Tempoy processes
+wmic process where "name='pythonw.exe' AND commandline LIKE '%%tempoy%%'" get processid 2>nul | findstr /r "[0-9]" >nul 2>&1 && set "FOUND_ANY=1"
+if "!FOUND_ANY!"=="0" wmic process where "name='python.exe' AND commandline LIKE '%%tempoy%%'" get processid 2>nul | findstr /r "[0-9]" >nul 2>&1 && set "FOUND_ANY=1"
+if "!FOUND_ANY!"=="0" wmic process where "name='wscript.exe' AND commandline LIKE '%%tempoy%%'" get processid 2>nul | findstr /r "[0-9]" >nul 2>&1 && set "FOUND_ANY=1"
+
+if "!FOUND_ANY!"=="1" (
+    echo %COLOR_YELLOW%Tempoy is currently running. It must be stopped before installation can continue.%COLOR_RESET%
+    set /p "KILL_CONFIRM=Stop all Tempoy processes? (Y/n): "
+    if /i "!KILL_CONFIRM!"=="n" (
+        echo %COLOR_RED%Installation cancelled. Please close Tempoy and try again.%COLOR_RESET%
+        pause
+        exit /b 1
+    )
+
+    :: Kill Tempoy GUI (pythonw.exe running tempoy.pyw or tempoy.py)
+    for /f "tokens=2" %%P in ('wmic process where "name='pythonw.exe' AND commandline LIKE '%%tempoy%%'" get processid 2^>nul ^| findstr /r "[0-9]"') do (
+        taskkill /pid %%P /f >nul 2>&1
+    )
+    for /f "tokens=2" %%P in ('wmic process where "name='python.exe' AND commandline LIKE '%%tempoy%%'" get processid 2^>nul ^| findstr /r "[0-9]"') do (
+        taskkill /pid %%P /f >nul 2>&1
+    )
+
+    :: Kill any wscript.exe running tempoy VBS launchers
+    for /f "tokens=2" %%P in ('wmic process where "name='wscript.exe' AND commandline LIKE '%%tempoy%%'" get processid 2^>nul ^| findstr /r "[0-9]"') do (
+        taskkill /pid %%P /f >nul 2>&1
+    )
+
+    echo %COLOR_GREEN%✓ Stopped running Tempoy processes%COLOR_RESET%
+    :: Brief pause to let processes fully terminate and release file locks
+    timeout /t 2 /nobreak >nul
+) else (
+    echo %COLOR_GREEN%✓ No running Tempoy processes found%COLOR_RESET%
+)
+
 :: Step 1: Check Python version
+echo.
 echo %COLOR_BLUE%[1/9] Checking Python installation...%COLOR_RESET%
 python --version >nul 2>&1
 if %errorlevel% neq 0 (
@@ -329,6 +368,22 @@ if /i "!CONFIRM!" neq "y" (
     pause
     exit /b 0
 )
+
+echo.
+echo %COLOR_BLUE%Stopping running Tempoy processes...%COLOR_RESET%
+
+:: Kill all Tempoy processes before uninstall
+for /f "tokens=2" %%P in ('wmic process where "name='pythonw.exe' AND commandline LIKE '%%tempoy%%'" get processid 2^>nul ^| findstr /r "[0-9]"') do (
+    taskkill /pid %%P /f >nul 2>&1
+)
+for /f "tokens=2" %%P in ('wmic process where "name='python.exe' AND commandline LIKE '%%tempoy%%'" get processid 2^>nul ^| findstr /r "[0-9]"') do (
+    taskkill /pid %%P /f >nul 2>&1
+)
+for /f "tokens=2" %%P in ('wmic process where "name='wscript.exe' AND commandline LIKE '%%tempoy%%'" get processid 2^>nul ^| findstr /r "[0-9]"') do (
+    taskkill /pid %%P /f >nul 2>&1
+)
+timeout /t 2 /nobreak >nul
+echo %COLOR_GREEN%✓ Processes stopped%COLOR_RESET%
 
 echo.
 echo %COLOR_BLUE%Removing Tempoy installation...%COLOR_RESET%
