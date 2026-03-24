@@ -73,7 +73,7 @@ if "!FOUND_ANY!"=="1" (
 
     echo %COLOR_GREEN%✓ Stopped running Tempoy processes%COLOR_RESET%
     :: Brief pause to let processes fully terminate and release file locks
-    timeout /t 2 /nobreak >nul
+    "%SystemRoot%\System32\timeout.exe" /t 2 /nobreak >nul
 ) else (
     echo %COLOR_GREEN%✓ No running Tempoy processes found%COLOR_RESET%
 )
@@ -308,7 +308,7 @@ echo %COLOR_BLUE%[9/9] Testing installation...%COLOR_RESET%
 cd /d "%TEMPOY_DIR%"
 call venv\Scripts\activate.bat
 echo Testing Tempoy launch...
-timeout /t 2 >nul
+"%SystemRoot%\System32\timeout.exe" /t 2 >nul
 
 :: Try to verify imports and startup
 set "VERIFY_OK=0"
@@ -382,7 +382,7 @@ for /f "tokens=2" %%P in ('wmic process where "name='python.exe' AND commandline
 for /f "tokens=2" %%P in ('wmic process where "name='wscript.exe' AND commandline LIKE '%%tempoy%%'" get processid 2^>nul ^| findstr /r "[0-9]"') do (
     taskkill /pid %%P /f >nul 2>&1
 )
-timeout /t 2 /nobreak >nul
+"%SystemRoot%\System32\timeout.exe" /t 2 /nobreak >nul
 echo %COLOR_GREEN%✓ Processes stopped%COLOR_RESET%
 
 echo.
