@@ -137,6 +137,12 @@ if [[ "$1" == "uninstall_tempoy" ]]; then
     done
     rm -f "$HOME/.claude/commands/tempoy-"*.md 2>/dev/null || true
 
+    # Remove MCP server configuration (must run before venv/package deletion)
+    if [[ -x "$VENV_DIR/bin/python" && -f "$PACKAGE_DIR/setup_mcp_config.py" ]]; then
+        log_step "Removing MCP server configuration..."
+        PYTHONPATH="$TEMPOY_DIR" "$VENV_DIR/bin/python" -m tempoy_app.setup_mcp_config uninstall 2>/dev/null || true
+    fi
+
     # Remove application files but preserve config
     if [[ -d "$TEMPOY_DIR" ]]; then
         # Backup config if it exists
@@ -464,6 +470,13 @@ if [[ -d "$SCRIPT_DIR/agents" ]]; then
 else
     log_warning "Agents directory not found in source — skipping agent install"
 fi
+
+# Configure MCP server in AI tool settings (VS Code, Claude Code, Claude Desktop)
+echo
+log_step "Configuring MCP server in AI tools..."
+PYTHONPATH="$TEMPOY_DIR" "$VENV_DIR/bin/python" -m tempoy_app.setup_mcp_config install || {
+    log_warning "MCP configuration may be incomplete."
+}
 
 # Step 9: Test installation
 echo

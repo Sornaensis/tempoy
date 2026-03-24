@@ -311,6 +311,15 @@ if exist "%SCRIPT_DIR%agents" (
     echo %COLOR_YELLOW%  Agents directory not found in source — skipping agent install%COLOR_RESET%
 )
 
+:: Configure MCP server in AI tool settings (VS Code, Claude Code, Claude Desktop)
+echo.
+echo Configuring MCP server in AI tools...
+set "PYTHONPATH=%TEMPOY_DIR%"
+"%VENV_DIR%\Scripts\python.exe" -m tempoy_app.setup_mcp_config install
+if %errorlevel% neq 0 (
+    echo %COLOR_YELLOW%Warning: MCP configuration may be incomplete.%COLOR_RESET%
+)
+
 :: Step 9: Test installation
 echo.
 echo %COLOR_BLUE%[9/9] Testing installation...%COLOR_RESET%
@@ -429,6 +438,15 @@ for %%D in ("Code" "Code - Insiders" "Cursor") do (
     del "%APPDATA%\%%~D\User\prompts\tempoy-*.agent.md" 2>nul
 )
 del "%USERPROFILE%\.claude\commands\tempoy-*.md" 2>nul
+
+:: Remove MCP server configuration (must run before venv/package deletion)
+if exist "%VENV_DIR%\Scripts\python.exe" (
+    if exist "%PACKAGE_DIR%\setup_mcp_config.py" (
+        echo Removing MCP server configuration...
+        set "PYTHONPATH=%TEMPOY_DIR%"
+        "%VENV_DIR%\Scripts\python.exe" -m tempoy_app.setup_mcp_config uninstall 2>nul
+    )
+)
 
 :: Remove application files but preserve config
 if exist "%TEMPOY_DIR%" (
