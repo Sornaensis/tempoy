@@ -8,7 +8,7 @@ Use the Tempoy MCP server tools to interact with Jira. Follow this workflow:
 
 2. **Scope the Work**: Based on the user's request below, determine if this requires a single task or an epic with child tickets. Interview the user if the requirements are unclear.
 
-3. **Validate Each Ticket**: Before creating each ticket, thoroughly review the specification:
+3. **Validate Each Ticket**: Before creating each ticket, thoroughly review the specification. If available, suggest the user run the **tempoy-review-task** agent for a formal assessment. Otherwise, check:
    - Is the goal unambiguous?
    - Are acceptance criteria defined and measurable?
    - Is the scope clear — what is included AND what is excluded?

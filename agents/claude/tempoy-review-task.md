@@ -29,5 +29,6 @@ Use the Tempoy MCP server tools to read ticket details, and search the codebase 
 - Reference actual code paths and file names from the codebase
 - If the spec is already well-defined, confirm it is ready
 - Do not create or modify any tickets or project files — advisory only
+- When issues are found, suggest the user run the **tempoy-refine-task** agent to apply improvements
 
 Task to review: $ARGUMENTS

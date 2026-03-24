@@ -164,6 +164,15 @@ if errorlevel 2 (
 )
 echo %COLOR_GREEN%✓ Tempoy application payload installed%COLOR_RESET%
 
+:: Step 5b: Generate Windows icon file from SVG
+echo Generating application icon...
+python "%PACKAGE_DIR%\generate_ico.py" "%TEMPOY_DIR%\tempoy.ico" 2>nul
+if exist "%TEMPOY_DIR%\tempoy.ico" (
+    echo %COLOR_GREEN%✓ Application icon generated%COLOR_RESET%
+) else (
+    echo %COLOR_YELLOW%  Icon generation skipped — will use default icon%COLOR_RESET%
+)
+
 :: Step 6: Create launcher VBScript (runs without console window)
 echo.
 echo %COLOR_BLUE%[6/9] Creating launcher script...%COLOR_RESET%
@@ -207,8 +216,15 @@ if "%PATH_TARGET%"=="MACHINE" (
     set "START_MENU=%PROGRAMDATA%\Microsoft\Windows\Start Menu\Programs"
 )
 
-:: Create shortcut using PowerShell
-powershell -Command "& {$WshShell = New-Object -comObject WScript.Shell; $Shortcut = $WshShell.CreateShortcut('%START_MENU%\Tempoy.lnk'); $Shortcut.TargetPath = '%TEMPOY_DIR%\tempoy.vbs'; $Shortcut.WorkingDirectory = '%TEMPOY_DIR%'; $Shortcut.Description = 'Tempoy - Time logging for Jira/Tempo'; $Shortcut.Save()}" 2>nul
+:: Create shortcut using PowerShell (with icon if available)
+if exist "%TEMPOY_DIR%\tempoy.ico" (
+    powershell -Command "& {$WshShell = New-Object -comObject WScript.Shell; $Shortcut = $WshShell.CreateShortcut('%START_MENU%\Tempoy.lnk'); $Shortcut.TargetPath = '%TEMPOY_DIR%\tempoy.vbs'; $Shortcut.WorkingDirectory = '%TEMPOY_DIR%'; $Shortcut.IconLocation = '%TEMPOY_DIR%\tempoy.ico,0'; $Shortcut.Description = 'Tempoy - Time logging for Jira/Tempo'; $Shortcut.Save()}" 2>nul
+) else (
+    powershell -Command "& {$WshShell = New-Object -comObject WScript.Shell; $Shortcut = $WshShell.CreateShortcut('%START_MENU%\Tempoy.lnk'); $Shortcut.TargetPath = '%TEMPOY_DIR%\tempoy.vbs'; $Shortcut.WorkingDirectory = '%TEMPOY_DIR%'; $Shortcut.Description = 'Tempoy - Time logging for Jira/Tempo'; $Shortcut.Save()}" 2>nul
+)
+
+:: Clear Windows icon cache so the new icon appears immediately
+ie4uinit.exe -show >nul 2>&1
 
 echo %COLOR_GREEN%✓ System integration completed%COLOR_RESET%
 

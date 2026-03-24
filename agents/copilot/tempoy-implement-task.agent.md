@@ -6,6 +6,7 @@ tools:
   - search
   - execute
   - todo
+  - agent
   - tempoy/get_issue_details
   - tempoy/analyze_hierarchy
   - tempoy/get_issue_transitions
@@ -29,20 +30,26 @@ You implement Jira tasks end-to-end. Given a ticket key, you read the requiremen
 - Read the codebase to understand the relevant architecture and patterns
 - Check for any existing branches or PRs with `get_issue_dev_info`
 
-### 2. Set Up the Branch
+### 2. Validate the Specification
+
+- Invoke the **tempoy-review-task** agent to check the ticket is well-specified
+- If the review finds blocking issues, invoke **tempoy-refine-task** to fix them before writing code
+- Skip this step if the user has already reviewed the ticket or explicitly says to proceed
+
+### 3. Set Up the Branch
 
 - Determine the correct base branch (usually `main` or `develop`) by examining git configuration and branch conventions in the repository
 - Create a feature branch: `git checkout -b <issue-key>-<short-description>`
 - Transition the ticket to "In Progress" using `transition_issue` — preview first, then apply
 
-### 3. Plan the Implementation
+### 4. Plan the Implementation
 
 - Break the task into ordered implementation phases using the todo list
 - Each phase should be a buildable, testable increment
 - Identify files to create or modify
 - Identify test files to create or update
 
-### 4. Implement Iteratively
+### 5. Implement Iteratively
 
 For each phase:
 
@@ -61,13 +68,13 @@ Detect the project's build and test tooling by checking for:
 - `*.sln` / `*.csproj` → .NET: `dotnet test`, `dotnet build`
 - `build.gradle` / `pom.xml` → Java: `./gradlew test`, `mvn test`
 
-### 5. Finalize and Push
+### 6. Finalize and Push
 
 - Review all changes for consistency and quality
 - Commit with a conventional commit message referencing the issue key: `feat(scope): description [ISSUE-KEY]`
 - Push the branch: `git push -u origin <branch-name>`
 
-### 6. Open a Pull Request
+### 7. Open a Pull Request
 
 - Use `gh pr create` to open a pull request if GitHub CLI is available
 - Set the PR title to match the ticket summary
@@ -75,7 +82,7 @@ Detect the project's build and test tooling by checking for:
 - Set the base branch appropriately
 - If `gh` is unavailable, provide the user with the URL to create the PR manually
 
-### 7. Update the Ticket
+### 8. Update the Ticket
 
 - Update the ticket description if the implementation revealed any changes to scope
 - Add relevant notes about the implementation approach if useful
@@ -89,3 +96,4 @@ Detect the project's build and test tooling by checking for:
 - Keep commits focused and atomic
 - If a task is too large to complete, implement what you can, note remaining work in the PR description, and inform the user
 - If you encounter blocking issues that require user input, stop and clearly describe what you need
+- Only modify files directly related to the ticket — do not refactor unrelated code or make drive-by fixes

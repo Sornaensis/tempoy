@@ -113,6 +113,9 @@ $RECYCLE.BIN/
 *.msp
 
 # Tempoy specific (based on your project structure)
+# Generated icon file
+*.ico
+
 # Version file (appears to be auto-generated)
 2.32
 

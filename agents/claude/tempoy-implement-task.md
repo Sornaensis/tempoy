@@ -6,11 +6,13 @@ Use the Tempoy MCP server tools for Jira operations and standard tools for codin
 
 1. **Understand the Task**: Use `get_issue_details` to read the ticket. Use `analyze_hierarchy` for parent/sibling context. Read the relevant codebase to understand architecture and conventions.
 
-2. **Set Up Branch**: Determine the base branch (usually main or develop) from git config and conventions. Create a feature branch: `git checkout -b <issue-key>-<short-description>`. Use `transition_issue` to move the ticket to "In Progress" — preview first, then apply.
+2. **Validate the Specification**: If the ticket hasn't been reviewed yet, evaluate whether the description and acceptance criteria are clear enough to implement. If they are vague or incomplete, stop and ask the user to run the **tempoy-review-task** and **tempoy-refine-task** agents first.
 
-3. **Plan**: Break the task into ordered implementation phases. Each phase should be a buildable, testable increment. Identify files to create or modify, and test files to update.
+3. **Set Up Branch**: Determine the base branch (usually main or develop) from git config and conventions. Create a feature branch: `git checkout -b <issue-key>-<short-description>`. Use `transition_issue` to move the ticket to "In Progress" — preview first, then apply.
 
-4. **Implement Iteratively**: For each phase:
+4. **Plan**: Break the task into ordered implementation phases. Each phase should be a buildable, testable increment. Identify files to create or modify, and test files to update.
+
+5. **Implement Iteratively**: For each phase:
    - Write the code changes
    - Run the project's build/compile commands
    - Run the test suite
@@ -18,11 +20,11 @@ Use the Tempoy MCP server tools for Jira operations and standard tools for codin
 
    Detect tooling from: package.json (npm), Makefile, pyproject.toml/pytest.ini (pytest), Cargo.toml (cargo), go.mod (go), *.sln/*.csproj (dotnet), build.gradle/pom.xml (gradle/maven).
 
-5. **Push**: Review changes for consistency. Commit with a conventional commit message referencing the issue key: `feat(scope): description [ISSUE-KEY]`. Push the branch: `git push -u origin <branch-name>`.
+6. **Push**: Review changes for consistency. Commit with a conventional commit message referencing the issue key: `feat(scope): description [ISSUE-KEY]`. Push the branch: `git push -u origin <branch-name>`.
 
-6. **Open PR**: Use `gh pr create` if GitHub CLI is available. Include the ticket key and link in the PR description. Set the base branch appropriately. If `gh` is unavailable, provide the URL for manual creation.
+7. **Open PR**: Use `gh pr create` if GitHub CLI is available. Include the ticket key and link in the PR description. Set the base branch appropriately. If `gh` is unavailable, provide the URL for manual creation.
 
-7. **Update Ticket**: Use `update_issue_fields` to update the ticket if the implementation changed scope.
+8. **Update Ticket**: Use `update_issue_fields` to update the ticket if the implementation changed scope.
 
 ## Rules
 
@@ -32,5 +34,6 @@ Use the Tempoy MCP server tools for Jira operations and standard tools for codin
 - Write or update tests for all new functionality
 - Keep commits focused and atomic
 - If blocked, stop and clearly describe what help is needed
+- Only modify files directly related to the ticket — do not refactor unrelated code or make drive-by fixes
 
 Ticket to implement: $ARGUMENTS
