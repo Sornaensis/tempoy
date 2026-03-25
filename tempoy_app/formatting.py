@@ -81,6 +81,65 @@ def format_relative_time(date_str: str, *, today: dt.date | None = None) -> str:
 # Markdown → Atlassian Document Format (ADF)
 # ---------------------------------------------------------------------------
 
+_SEPARATOR_RE = re.compile(r"^\s*\|?[\s:]*-{3,}[\s:]*(\|[\s:]*-{3,}[\s:]*)*\|?\s*$")
+
+
+def _split_table_row(line: str) -> list[str]:
+    """Split a pipe-delimited table row into cell texts."""
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    return [cell.strip() for cell in stripped.split("|")]
+
+
+def _parse_table(table_lines: list[str]) -> dict | None:
+    """Parse markdown table lines into an ADF table node.
+
+    Expects at least a header row and a separator row.
+    Returns ``None`` if the lines don't form a valid table.
+    """
+    if len(table_lines) < 2:
+        return None
+
+    # Identify the separator line (must be present)
+    sep_idx: int | None = None
+    for idx, tl in enumerate(table_lines):
+        if _SEPARATOR_RE.match(tl):
+            sep_idx = idx
+            break
+    if sep_idx is None:
+        return None
+
+    header_lines = table_lines[:sep_idx]
+    body_lines = table_lines[sep_idx + 1:]
+
+    if not header_lines:
+        return None
+
+    def _make_row(cells: list[str], cell_type: str = "tableCell") -> dict:
+        return {
+            "type": "tableRow",
+            "content": [
+                {"type": cell_type, "content": [{"type": "paragraph", "content": _parse_inline(c)}]}
+                for c in cells
+            ],
+        }
+
+    rows: list[dict] = []
+    for hl in header_lines:
+        rows.append(_make_row(_split_table_row(hl), "tableHeader"))
+    for bl in body_lines:
+        if not bl.strip():
+            continue
+        rows.append(_make_row(_split_table_row(bl)))
+
+    if not rows:
+        return None
+    return {"type": "table", "content": rows}
+
+
 _INLINE_PATTERN = re.compile(
     r"(?P<bold_ast>\*\*(?P<bold_ast_text>.+?)\*\*)"
     r"|(?P<bold_usc>__(?P<bold_usc_text>.+?)__)"
@@ -184,6 +243,21 @@ def markdown_to_adf(text: str) -> dict:
                 i += 1
             content.append({"type": "orderedList", "content": items})
             continue
+
+        # --- table ---
+        if "|" in stripped:
+            table_lines: list[str] = []
+            while i < len(lines) and "|" in lines[i]:
+                table_lines.append(lines[i])
+                i += 1
+            table_node = _parse_table(table_lines)
+            if table_node is not None:
+                content.append(table_node)
+                continue
+            # Not a valid table — fall through and treat first line as paragraph
+            for tl in table_lines[1:]:
+                lines.insert(i, tl)
+            stripped = table_lines[0].strip()
 
         # --- paragraph (fallback) ---
         content.append({"type": "paragraph", "content": _parse_inline(stripped)})

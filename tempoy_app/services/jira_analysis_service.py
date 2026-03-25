@@ -213,7 +213,56 @@ class JiraAnalysisService:
             return
         if not isinstance(node, dict):
             return
+
+        node_type = node.get("type")
+
+        # --- ADF table → markdown table ---
+        if node_type == "table":
+            table_md = self._adf_table_to_markdown(node)
+            if table_md:
+                fragments.append(table_md)
+            return
+
         text = str(node.get("text") or "").strip()
         if text:
+            marks = node.get("marks") or []
+            text = self._apply_marks(text, marks)
             fragments.append(text)
         self._collect_text_fragments(node.get("content"), fragments)
+
+    @staticmethod
+    def _apply_marks(text: str, marks: List[Dict]) -> str:
+        for mark in marks:
+            mark_type = mark.get("type")
+            if mark_type == "strong":
+                text = f"**{text}**"
+            elif mark_type == "em":
+                text = f"*{text}*"
+            elif mark_type == "code":
+                text = f"`{text}`"
+            elif mark_type == "link":
+                href = (mark.get("attrs") or {}).get("href", "")
+                text = f"[{text}]({href})"
+        return text
+
+    def _adf_table_to_markdown(self, table_node: Dict) -> str:
+        rows = table_node.get("content") or []
+        if not rows:
+            return ""
+        md_rows: List[str] = []
+        header_done = False
+        for row in rows:
+            if row.get("type") != "tableRow":
+                continue
+            cells = row.get("content") or []
+            is_header = any(c.get("type") == "tableHeader" for c in cells)
+            cell_texts: List[str] = []
+            for cell in cells:
+                cell_fragments: List[str] = []
+                self._collect_text_fragments(cell.get("content"), cell_fragments)
+                cell_texts.append(" ".join(cell_fragments))
+            md_rows.append("| " + " | ".join(cell_texts) + " |")
+            if is_header and not header_done:
+                md_rows.append("| " + " | ".join("---" for _ in cell_texts) + " |")
+                header_done = True
+        return "\n".join(md_rows)
