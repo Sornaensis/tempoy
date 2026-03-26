@@ -190,13 +190,15 @@ def markdown_to_adf(text: str) -> dict:
         line = lines[i]
 
         # --- fenced code block ---
-        fence_match = re.match(r"^(`{3,})(.*)", line)
+        fence_match = re.match(r"^[ ]{0,3}(`{3,}|~{3,})(.*)", line)
         if fence_match:
-            fence = fence_match.group(1)
+            fence_char = fence_match.group(1)[0]
+            fence_len = len(fence_match.group(1))
             language = fence_match.group(2).strip() or None
             code_lines: list[str] = []
             i += 1
-            while i < len(lines) and not lines[i].startswith(fence):
+            close_re = re.compile(r"^[ ]{0,3}" + re.escape(fence_char) + "{" + str(fence_len) + ",}\\s*$")
+            while i < len(lines) and not close_re.match(lines[i]):
                 code_lines.append(lines[i])
                 i += 1
             i += 1  # skip closing fence

@@ -696,10 +696,7 @@ class CopilotRoutes:
         }
         warnings: list[str] = []
         if description_text:
-            if "description" in fields_schema or not fields_schema:
-                fields["description"] = CopilotRoutes._to_adf_document(description_text)
-            else:
-                warnings.append("Description is not available in this project's Task create schema")
+            fields["description"] = CopilotRoutes._to_adf_document(description_text)
         if labels:
             if "labels" in fields_schema:
                 fields["labels"] = labels
@@ -766,11 +763,8 @@ class CopilotRoutes:
         if "description_text" in body:
             requested_change = True
             description_text = str(body.get("description_text") or "")
-            if "description" in editable_fields or not editable_fields:
-                fields["description"] = CopilotRoutes._to_adf_document(description_text)
-                changes["description_text"] = {"from": str(normalized_issue.get("description_text") or ""), "to": description_text.strip()}
-            else:
-                warnings.append("Description is not editable for this issue")
+            fields["description"] = CopilotRoutes._to_adf_document(description_text)
+            changes["description_text"] = {"from": str(normalized_issue.get("description_text") or ""), "to": description_text.strip()}
 
         if "labels" in body:
             requested_change = True
