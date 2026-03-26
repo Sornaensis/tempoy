@@ -14,6 +14,9 @@ tools:
   - tempoy/update_issue_fields
   - tempoy/get_issue_dev_info
 user-invocable: false
+agents:
+  - tempoy-review-task
+  - tempoy-refine-task
 ---
 
 You are a Jira task implementation agent that takes a ticket from "To Do" to "Done" by writing code, running tests, and opening a pull request.

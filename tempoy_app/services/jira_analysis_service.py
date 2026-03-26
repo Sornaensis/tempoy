@@ -223,6 +223,16 @@ class JiraAnalysisService:
                 fragments.append(table_md)
             return
 
+        # --- ADF codeBlock → fenced code block ---
+        if node_type == "codeBlock":
+            code_fragments: List[str] = []
+            for child in (node.get("content") or []):
+                code_fragments.append(str(child.get("text") or ""))
+            code_text = "".join(code_fragments)
+            language = (node.get("attrs") or {}).get("language") or ""
+            fragments.append(f"```{language}\n{code_text}\n```")
+            return
+
         text = str(node.get("text") or "").strip()
         if text:
             marks = node.get("marks") or []

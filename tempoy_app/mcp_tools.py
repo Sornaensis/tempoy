@@ -42,7 +42,7 @@ TOOL_DEFINITIONS: List[McpToolDefinition] = [
     ),
     McpToolDefinition(
         "search_tickets",
-        "Search Jira tickets through Tempoy's safe search surface. Supports filtering by assignee, labels, priority, date ranges, and parent issue.",
+        "Search Jira tickets through Tempoy's safe search surface. Returns matching issues with descriptions in standard markdown. Supports filtering by assignee, labels, priority, date ranges, and parent issue.",
         _object_schema(
             properties={
                 "query": {"type": "string", "description": "Free-text search across summary, description, and comments — or an exact issue key like ABC-123."},
@@ -64,7 +64,7 @@ TOOL_DEFINITIONS: List[McpToolDefinition] = [
     ),
     McpToolDefinition(
         "get_issue_details",
-        "Get normalized details for a Jira issue through Tempoy.",
+        "Get normalized details for a Jira issue through Tempoy. The description is returned as standard markdown.",
         _object_schema(
             properties={"issue_key": {"type": "string", "description": "Jira issue key, such as ABC-123."}},
             required=["issue_key"],
@@ -95,7 +95,7 @@ TOOL_DEFINITIONS: List[McpToolDefinition] = [
             properties={
                 "project_key": {"type": "string"},
                 "summary": {"type": "string"},
-                "description_text": {"type": "string"},
+                "description_text": {"type": "string", "description": "Issue description in standard markdown (headings, bold, italic, lists, tables, code blocks, links). Converted to Jira format automatically."},
                 "labels": {"type": "array", "items": {"type": "string"}},
                 "priority": {"type": "string"},
                 "apply": {"type": "boolean", "description": "Set true to execute the create (after previewing). Without this, returns a preview only."},
@@ -114,7 +114,7 @@ TOOL_DEFINITIONS: List[McpToolDefinition] = [
             properties={
                 "issue_key": {"type": "string"},
                 "summary": {"type": "string"},
-                "description_text": {"type": "string"},
+                "description_text": {"type": "string", "description": "Issue description in standard markdown (headings, bold, italic, lists, tables, code blocks, links). Converted to Jira format automatically."},
                 "labels": {"type": "array", "items": {"type": "string"}},
                 "priority": {"type": "string"},
                 "parent_key": {"type": "string"},

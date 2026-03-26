@@ -11,6 +11,7 @@ tools:
   - tempoy/list_project_issue_types
   - tempoy/discover_custom_fields
 user-invocable: false
+agents: []
 ---
 
 You are a Jira task review agent that validates task specifications for completeness, clarity, and implementability.

@@ -289,5 +289,73 @@ class AdfToMarkdownTableTests(unittest.TestCase):
         self.assertIn("After table", result)
 
 
+class AdfToMarkdownCodeBlockTests(unittest.TestCase):
+    """Tests for ADF codeBlock → fenced code block extraction."""
+
+    def setUp(self) -> None:
+        self.svc = JiraAnalysisService(jira_base_url="https://jira.example.com")
+
+    def test_adf_code_block_with_language(self) -> None:
+        adf = {
+            "type": "doc", "version": 1,
+            "content": [{"type": "codeBlock", "attrs": {"language": "bash"},
+                         "content": [{"type": "text", "text": "echo hello"}]}],
+        }
+        result = self.svc._extract_description_text(adf)
+        self.assertIn("```bash", result)
+        self.assertIn("echo hello", result)
+        self.assertIn("```", result)
+
+    def test_adf_code_block_no_language(self) -> None:
+        adf = {
+            "type": "doc", "version": 1,
+            "content": [{"type": "codeBlock",
+                         "content": [{"type": "text", "text": "some code"}]}],
+        }
+        result = self.svc._extract_description_text(adf)
+        self.assertIn("```\n", result)
+        self.assertIn("some code", result)
+
+    def test_adf_code_block_multiline(self) -> None:
+        adf = {
+            "type": "doc", "version": 1,
+            "content": [{"type": "codeBlock", "attrs": {"language": "python"},
+                         "content": [{"type": "text", "text": "def foo():\n    return 42"}]}],
+        }
+        result = self.svc._extract_description_text(adf)
+        self.assertIn("```python", result)
+        self.assertIn("def foo():\n    return 42", result)
+
+    def test_roundtrip_code_block_with_language(self) -> None:
+        md = "```bash\necho hello\n```"
+        adf = markdown_to_adf(md)
+        result = self.svc._extract_description_text(adf)
+        self.assertIn("```bash", result)
+        self.assertIn("echo hello", result)
+
+    def test_roundtrip_code_block_no_language(self) -> None:
+        md = "```\nplain code\n```"
+        adf = markdown_to_adf(md)
+        result = self.svc._extract_description_text(adf)
+        self.assertIn("```\n", result)
+        self.assertIn("plain code", result)
+
+    def test_code_block_among_other_content(self) -> None:
+        adf = {
+            "type": "doc", "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "Run this:"}]},
+                {"type": "codeBlock", "attrs": {"language": "bash"},
+                 "content": [{"type": "text", "text": "npm install"}]},
+                {"type": "paragraph", "content": [{"type": "text", "text": "Then start."}]},
+            ],
+        }
+        result = self.svc._extract_description_text(adf)
+        self.assertIn("Run this:", result)
+        self.assertIn("```bash", result)
+        self.assertIn("npm install", result)
+        self.assertIn("Then start.", result)
+
+
 if __name__ == "__main__":
     unittest.main()

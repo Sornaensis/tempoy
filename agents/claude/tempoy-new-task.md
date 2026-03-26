@@ -22,6 +22,7 @@ Use the Tempoy MCP server tools to interact with Jira. Follow this workflow:
 ## Rules
 
 - Always preview before creating — confirm with the user before applying
+- Write descriptions in standard markdown (headings, bold, italic, lists, tables, code blocks, links) — Tempoy converts to Jira's format automatically, never use Jira wiki markup
 - Write implementation-aware descriptions using codebase context
 - Include clear acceptance criteria in every ticket
 - Use specific, actionable language in summaries
